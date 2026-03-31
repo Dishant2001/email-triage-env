@@ -7,10 +7,14 @@
 """My Env Environment."""
 
 from .client import MyEnv
-from .models import MyAction, MyObservation
+from .models import MyAction, MyObservation, MyReward
+from .tasks import TaskSpec, all_tasks
 
 __all__ = [
     "MyAction",
     "MyObservation",
+    "MyReward",
     "MyEnv",
+    "TaskSpec",
+    "all_tasks",
 ]

@@ -123,3 +123,21 @@ class MyObservation(Observation):
     )
     time_advance: int = Field(default=0, ge=0, description="Virtual time consumed by last action")
     action_cost: float = Field(default=0.0, description="Direct cost applied for last action")
+
+
+class MyReward(BaseModel):
+    """
+    Typed reward payload for OpenEnv spec compliance.
+
+    Note: the OpenEnv runtime transports reward as a float, but environments can
+    also expose a typed breakdown via metadata and evaluation harnesses.
+    """
+
+    total: float = Field(..., description="Total scalar reward for the step")
+    sla_breach: bool = Field(..., description="Whether SLA was breached for chosen email")
+    sla_score: float = Field(..., description="SLA component")
+    prioritization_score: float = Field(..., description="Urgency selection component")
+    action_score: float = Field(..., description="Ground-truth action match component")
+    response_score: float = Field(..., description="Deterministic response rubric component")
+    cost_penalty: float = Field(..., description="Action cost penalty (negative)")
+    idle_penalty: float = Field(..., description="Per-step idle penalty (negative)")

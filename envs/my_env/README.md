@@ -13,7 +13,12 @@ tags:
 
 # My Env Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+An **inbox triage** environment where an agent manages multiple emails under **SLA deadlines**. Each step, the agent selects a pending email and chooses one action:
+- `reply` (optionally with a response)
+- `escalate` (costly but appropriate for VIP/high urgency)
+- `archive` (for low-priority/no-action items)
+
+The environment supports **partial observability** (top‑N emails only) and optional **seeded arrivals**.
 
 ## Quick Start
 
@@ -24,25 +29,20 @@ from my_env import MyAction, MyEnv
 
 try:
     # Create environment from Docker image
-    my_envenv = MyEnv.from_docker_image("my_env-env:latest")
+    env = MyEnv.from_docker_image("my_env-env:latest")
 
     # Reset
-    result = my_envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+    result = env.reset(config={"top_n": 3, "seed": 1, "arrivals_enabled": True, "max_new_emails": 2})
+    print(f"current_time={result.observation.current_time} visible={len(result.observation.inbox)}")
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = my_envenv.step(MyAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
+    # Take one action
+    first = result.observation.inbox[0]
+    result = env.step(MyAction(email_id=first.email_id, action_type="reply", response="Thanks — we’ll investigate and share an ETA."))
+    print(f"reward={result.reward} done={result.done}")
 
 finally:
     # Always clean up
-    my_envenv.close()
+    env.close()
 ```
 
 That's it! The `MyEnv.from_docker_image()` method handles:
@@ -119,22 +119,27 @@ The deployed space includes:
 ## Environment Details
 
 ### Action
-**MyAction**: Contains a single field
-- `message` (str) - The message to echo back
+**MyAction**
+- `email_id` (str) - target email id (must be pending & visible)
+- `action_type` (`reply | escalate | archive`)
+- `response` (str) - optional; used for deterministic reply grading
 
 ### Observation
-**MyObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
+**MyObservation**
+- `current_time` (int)
+- `inbox` (list[Email]) - top‑N visible pending emails
+- `hidden_pending_count` (int)
+- `reward` (float) - scalar shaped reward for the last step
+- `done` (bool) - True when no pending emails remain
+- `metadata["grade"]` (dict) - deterministic breakdown (SLA/prioritization/correctness/response/costs)
 
 ### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
+Reward is a **multi-factor shaped signal** computed each step (see `server/grader.py`):
+- SLA compliance / breach penalty
+- prioritization (did you pick the most urgent pending email?)
+- action correctness vs deterministic `ground_truth_action`
+- reply rubric (keyword checklist)
+- action costs + small per-step penalty
 
 ## Advanced Usage
 
@@ -233,6 +238,14 @@ Run the server locally for development:
 
 ```bash
 uvicorn server.app:app --reload
+```
+
+### Validate as an OpenEnv environment
+
+From the environment directory (where `openenv.yaml` is located):
+
+```bash
+openenv validate
 ```
 
 ## Project Structure

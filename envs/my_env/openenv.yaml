@@ -5,3 +5,12 @@ runtime: fastapi
 app: server.app:app
 port: 8000
 
+description: >
+  Inbox triage environment: choose which email to handle (reply/escalate/archive)
+  under SLA deadlines, partial observability (top-N), and optional new arrivals.
+version: "0.1.0"
+tags:
+  - openenv
+  - customer-support
+  - inbox-triage
+

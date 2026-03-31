@@ -1,4 +1,7 @@
 README.md
+__init__.py
+client.py
+models.py
 pyproject.toml
 ./__init__.py
 ./client.py
@@ -11,4 +14,8 @@ openenv_my_env.egg-info/requires.txt
 openenv_my_env.egg-info/top_level.txt
 server/__init__.py
 server/app.py
+server/dynamics.py
+server/grader.py
+server/inbox_types.py
 server/my_env_environment.py
+server/scenarios.py

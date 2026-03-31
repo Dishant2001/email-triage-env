@@ -10,7 +10,7 @@ It is intentionally structured like `sample_inference_script.py`:
 - loop: build prompt from observation -> get action -> step -> log -> repeat
 
 Supports two agent modes:
-1) LLM policy (if MODEL_NAME + HF_TOKEN/API_KEY are configured)
+1) LLM policy (if OPENAI_API_KEY + MODEL_NAME are configured)
 2) Deterministic fallback rule policy (no external model required)
 
 Environment dynamics (including incoming email arrivals) are controlled via reset
@@ -25,26 +25,24 @@ import os
 import re
 import textwrap
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
 from envs.my_env.client import MyEnv
 from envs.my_env.models import Email, MyAction, MyObservation
+from envs.my_env.tasks import TaskSpec, all_tasks, rollout_task
 
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")  # optional override
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL")
 
 BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 
 MAX_STEPS = int(os.getenv("MAX_STEPS") or "30")
 TEMPERATURE = float(os.getenv("TEMPERATURE") or "0.2")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS") or "220")
-
-# Default evaluation suite: different seeds will trigger different arrival samples
-DEFAULT_SEEDS = [0, 1, 2, 3, 4]
 
 JSON_ACTION_RE = re.compile(r"\{[\s\S]*\}")
 
@@ -76,9 +74,11 @@ SYSTEM_PROMPT = textwrap.dedent(
 
 @dataclass
 class EpisodeSummary:
-    seed: int
+    task_id: str
+    difficulty: str
     steps: int
     total_reward: float
+    task_score: float
     sla_breaches: int
     invalid_actions: int
 
@@ -207,88 +207,95 @@ async def llm_policy(client: OpenAI, obs: MyObservation, history: List[str], ste
     return parse_model_action(response_text, visible_ids=visible_ids)
 
 
-async def run_episode(seed: int) -> EpisodeSummary:
+async def run_task(task: TaskSpec) -> EpisodeSummary:
     history: List[str] = []
     total_reward = 0.0
     sla_breaches = 0
     invalid_actions = 0
+    trajectory: List[Tuple[MyObservation, Optional[MyAction]]] = []
 
     llm_client: Optional[OpenAI] = None
-    use_llm = bool(MODEL_NAME and API_KEY)
+    use_llm = bool(MODEL_NAME and OPENAI_API_KEY)
     if use_llm:
-        llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        kwargs: Dict[str, Any] = {"api_key": OPENAI_API_KEY}
+        if OPENAI_BASE_URL:
+            kwargs["base_url"] = OPENAI_BASE_URL
+        llm_client = OpenAI(**kwargs)
 
     async with MyEnv(base_url=BASE_URL) as env:
-        # Reset-time config controls arrivals; vary seed to explore different arrival samples.
-        result = await env.reset(
-            config={
-                "top_n": 5,
-                "seed": seed,
-                "arrivals_enabled": True,
-                "max_new_emails": 3,
-            }
-        )
-        obs: MyObservation = result.observation
+        # Use the task suite runner for deterministic task scores.
+        def policy(obs: MyObservation) -> Optional[MyAction]:
+            # If LLM enabled, we drive it through the same strict JSON prompt used previously.
+            # The rollout helper expects a sync policy, so we only use rule policy there.
+            return rule_policy(obs)
 
-        for step_idx in range(1, MAX_STEPS + 1):
-            if result.done:
-                break
-
-            action: Optional[MyAction] = None
-            if use_llm and llm_client is not None:
-                action = await llm_policy(llm_client, obs, history, step_idx)
-
-            if action is None:
-                action = rule_policy(obs)
-
-            result = await env.step(action)
+        # If LLM is configured, we run a manual loop so we can call the async LLM.
+        if use_llm and llm_client is not None:
+            result = await env.reset(config=task.reset_config)
             obs = result.observation
+            for step_idx in range(1, min(task.max_steps, MAX_STEPS) + 1):
+                if result.done:
+                    break
+                action = await llm_policy(llm_client, obs, history, step_idx) or rule_policy(obs)
+                trajectory.append((obs, action))
+                result = await env.step(action)
+                obs = result.observation
 
-            reward = float(result.reward or 0.0)
-            total_reward += reward
+                reward = float(result.reward or 0.0)
+                total_reward += reward
 
-            grade = (obs.metadata or {}).get("grade") or {}
-            if bool(grade.get("sla_breach", False)):
-                sla_breaches += 1
-            if (obs.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
-                invalid_actions += 1
+                grade = (obs.metadata or {}).get("grade") or {}
+                if bool(grade.get("sla_breach", False)):
+                    sla_breaches += 1
+                if (obs.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
+                    invalid_actions += 1
 
-            history_line = (
-                f"t={obs.current_time} action=({action.email_id},{action.action_type}) "
-                f"reward={reward:+.2f} breach={bool(grade.get('sla_breach', False))} "
-                f"new={len((obs.metadata or {}).get('new_emails') or [])}"
-            )
-            history.append(history_line)
+                history.append(
+                    f"t={obs.current_time} action=({action.email_id},{action.action_type}) "
+                    f"reward={reward:+.2f} breach={bool(grade.get('sla_breach', False))} "
+                    f"new={len((obs.metadata or {}).get('new_emails') or [])}"
+                )
+
+            state = await env.state()
+            task_score = float(task.grader(trajectory, state))
+        else:
+            task_score, traj, state = await rollout_task(env=env, task=task, policy=policy)
+            trajectory = traj
+            # Accumulate reward + breach stats from the actual trajectory observations.
+            for obs, action in traj:
+                grade = (obs.metadata or {}).get("grade") or {}
+                if bool(grade.get("sla_breach", False)):
+                    sla_breaches += 1
+                if (obs.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
+                    invalid_actions += 1
+            # Total reward can be reconstituted only from step results; keep 0 for pure task scoring mode.
+            total_reward = float(total_reward)
 
     return EpisodeSummary(
-        seed=seed,
+        task_id=task.task_id,
+        difficulty=task.difficulty,
         steps=len(history),
         total_reward=total_reward,
+        task_score=float(task_score),
         sla_breaches=sla_breaches,
         invalid_actions=invalid_actions,
     )
 
 
 async def main() -> None:
-    seeds_env = os.getenv("EVAL_SEEDS")
-    if seeds_env:
-        seeds = [int(s.strip()) for s in seeds_env.split(",") if s.strip()]
-    else:
-        seeds = DEFAULT_SEEDS
-
     results: List[EpisodeSummary] = []
-    for seed in seeds:
-        summary = await run_episode(seed)
+    for task in all_tasks():
+        summary = await run_task(task)
         results.append(summary)
         print(
-            f"[seed={summary.seed}] steps={summary.steps} total_reward={summary.total_reward:.2f} "
+            f"[{summary.task_id} ({summary.difficulty})] steps={summary.steps} "
+            f"task_score={summary.task_score:.3f} total_reward={summary.total_reward:.2f} "
             f"sla_breaches={summary.sla_breaches} invalid_actions={summary.invalid_actions}"
         )
 
     if results:
-        avg_reward = sum(r.total_reward for r in results) / len(results)
-        avg_breaches = sum(r.sla_breaches for r in results) / len(results)
-        print(f"AVERAGE: reward={avg_reward:.2f} sla_breaches={avg_breaches:.2f}")
+        avg_task = sum(r.task_score for r in results) / len(results)
+        print(f"AVERAGE_TASK_SCORE: {avg_task:.3f}")
 
 
 if __name__ == "__main__":
