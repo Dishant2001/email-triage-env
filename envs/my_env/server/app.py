@@ -79,6 +79,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    main(port=args.port)
+
+    # Keep a plain `main()` entrypoint for deployment validators that
+    # statically check for it, while still allowing CLI overrides.
+    main(host=args.host, port=args.port)
