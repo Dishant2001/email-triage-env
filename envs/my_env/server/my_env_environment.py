@@ -23,9 +23,9 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState
+    from ..models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState, to_public_email
 except ImportError:
-    from models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState
+    from models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState, to_public_email
 
 try:
     from .dynamics import (
@@ -80,6 +80,10 @@ class MyEnvironment(Environment):
     def _pending(self):
         return [e for e in self._state.emails if e.status == EmailStatus.pending]
 
+    def _public_inbox(self, visible_emails):
+        """Map internal Email rows to agent-visible PublicEmail (no grader labels)."""
+        return [to_public_email(e) for e in visible_emails]
+
     def _observe(self) -> MyObservation:
         pending = self._pending()
         top_n = int(self._state.config.top_n)
@@ -89,7 +93,7 @@ class MyEnvironment(Environment):
             done=len(pending) == 0,
             reward=None,
             current_time=self._state.current_time,
-            inbox=visible,
+            inbox=self._public_inbox(visible),
             hidden_pending_count=hidden,
             last_email_id=None,
             last_action_type=None,
@@ -142,8 +146,10 @@ class MyEnvironment(Environment):
             action_cost = float(self._state.config.action_costs.get(action.action_type, 0.0))
             observation = MyObservation(
                 current_time=self._state.current_time,
-                inbox=select_top_n_pending(
-                    self._state.emails, self._state.current_time, top_n=int(self._state.config.top_n)
+                inbox=self._public_inbox(
+                    select_top_n_pending(
+                        self._state.emails, self._state.current_time, top_n=int(self._state.config.top_n)
+                    )
                 ),
                 hidden_pending_count=max(0, len(self._pending()) - int(self._state.config.top_n)),
                 last_email_id=action.email_id,
@@ -199,7 +205,7 @@ class MyEnvironment(Environment):
         hidden = max(0, len(pending_after) - len(visible))
         observation = MyObservation(
             current_time=self._state.current_time,
-            inbox=visible,
+            inbox=self._public_inbox(visible),
             hidden_pending_count=hidden,
             last_email_id=chosen.email_id,
             last_action_type=action.action_type,
@@ -224,7 +230,18 @@ class MyEnvironment(Environment):
         """
         Get the current environment state.
 
-        Returns:
-            Current State (includes inbox + virtual time via extra fields)
+        When ``config.expose_grader_labels_in_state`` is False (default), emails omit
+        grader-only fields so training clients can safely call ``state()`` without
+        leaking the answer key.
         """
-        return self._state
+        s = self._state
+        if s.config.expose_grader_labels_in_state:
+            return s
+        return MyState(
+            episode_id=s.episode_id,
+            step_count=s.step_count,
+            current_time=s.current_time,
+            emails=[to_public_email(e) for e in s.emails],
+            config=s.config,
+            new_emails_added=s.new_emails_added,
+        )

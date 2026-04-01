@@ -12,7 +12,7 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import Email, MyAction, MyObservation, MyState
+from .models import Email, MyAction, MyObservation, MyState, PublicEmail
 
 
 class MyEnv(
@@ -72,7 +72,7 @@ class MyEnv(
         """
         obs_data = payload.get("observation", {})
         inbox_data = cast(List[Dict], obs_data.get("inbox", []))
-        inbox = [Email.model_validate(e) for e in inbox_data]
+        inbox = [PublicEmail.model_validate(e) for e in inbox_data]
         observation = MyObservation(
             current_time=obs_data.get("current_time", 0),
             inbox=inbox,
@@ -103,7 +103,13 @@ class MyEnv(
         Returns:
             State object with episode_id and step_count
         """
-        # The server includes extra fields (current_time, emails). Parse into our
-        # typed state model first, but keep return type compatible with EnvClient.
-        state = MyState.model_validate(payload)
-        return state
+        data = dict(payload)
+        raw_emails = cast(List[Dict], data.pop("emails", []))
+        emails: List[PublicEmail] = []
+        for e in raw_emails:
+            if isinstance(e, dict) and e.get("ground_truth_action") is not None:
+                emails.append(Email.model_validate(e))
+            else:
+                emails.append(PublicEmail.model_validate(e))
+        data["emails"] = emails
+        return MyState.model_validate(data)

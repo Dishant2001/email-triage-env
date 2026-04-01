@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openenv.core.client_types import StepResult
 
-from .models import Email, MyAction, MyObservation, MyState
+from .models import MyAction, MyObservation, MyState, PublicEmail
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,10 @@ class TaskSpec:
     Each task defines:
     - reset-time config (seed, top_n, arrivals settings)
     - a deterministic task-level grader returning a score in [0.0, 1.0]
+
+    Graders receive ``observation_chain``: ``[obs_0, obs_1, ...]`` where ``obs_0`` is the
+    initial observation and ``obs_{i+1}`` is the observation **after** step *i* (it carries
+    ``metadata`` for that step: ``grade``, ``new_emails``, errors).
     """
 
     task_id: str
@@ -23,29 +27,27 @@ class TaskSpec:
     description: str
     reset_config: Dict[str, Any]
     max_steps: int
-    grader: Callable[[List[Tuple[MyObservation, Optional[MyAction]]], MyState], float]
+    grader: Callable[
+        [List[Tuple[MyObservation, Optional[MyAction]]], MyState, List[MyObservation]],
+        float,
+    ]
 
 
 def _clip01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
 
 
-def _urgency_key(email: Email, current_time: int) -> Tuple[int, int, int]:
+def _urgency_key(email: PublicEmail, current_time: int) -> Tuple[int, int, int]:
     remaining = int(email.sla_limit) - (int(current_time) - int(email.created_time))
     priority_rank = {"high": 3, "medium": 2, "low": 1}.get(str(email.priority), 0)
     tier_rank = {"vip": 3, "premium": 2, "standard": 1}.get(str(email.customer_tier), 0)
-    # Lower is better: remaining SLA ascending, then priority/tier descending
     return (remaining, -priority_rank, -tier_rank)
 
 
-def _most_urgent(pending: List[Email], current_time: int) -> Optional[Email]:
+def _most_urgent(pending: List[PublicEmail], current_time: int) -> Optional[PublicEmail]:
     if not pending:
         return None
     return sorted(pending, key=lambda e: _urgency_key(e, current_time))[0]
-
-
-def _pending_from_state(state: MyState) -> List[Email]:
-    return [e for e in state.emails if str(e.status) == "pending"]
 
 
 def task_easy_single_urgent_first() -> TaskSpec:
@@ -53,7 +55,12 @@ def task_easy_single_urgent_first() -> TaskSpec:
     Easy: handle the single most urgent visible email correctly in the first step.
     """
 
-    def grader(trajectory: List[Tuple[MyObservation, Optional[MyAction]]], final_state: MyState) -> float:
+    def grader(
+        trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
+        final_state: MyState,
+        observation_chain: List[MyObservation],
+    ) -> float:
+        del final_state
         if not trajectory:
             return 0.0
         first_obs, first_action = trajectory[0]
@@ -68,13 +75,12 @@ def task_easy_single_urgent_first() -> TaskSpec:
 
         selection = 0.5 if str(first_action.email_id) == str(urgent.email_id) else 0.0
 
-        # Determine ground-truth action for the chosen email by inspecting final state (it includes all emails).
-        gt = None
-        for e in final_state.emails:
-            if str(e.email_id) == str(first_action.email_id):
-                gt = str(e.ground_truth_action)
-                break
-        action_ok = 0.5 if (gt is not None and str(first_action.action_type) == gt) else 0.0
+        # Use post-step observation metadata (no reliance on grader labels in state).
+        post = observation_chain[1] if len(observation_chain) > 1 else None
+        action_ok = 0.0
+        if post is not None:
+            grade = (post.metadata or {}).get("grade") or {}
+            action_ok = 0.5 if float(grade.get("action_score", 0.0) or 0.0) > 0.0 else 0.0
         return _clip01(selection + action_ok)
 
     return TaskSpec(
@@ -93,19 +99,26 @@ def task_medium_sla_safe_throughput() -> TaskSpec:
     reasonable correctness, and without excessive escalation.
     """
 
-    def grader(trajectory: List[Tuple[MyObservation, Optional[MyAction]]], final_state: MyState) -> float:
+    def grader(
+        trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
+        final_state: MyState,
+        observation_chain: List[MyObservation],
+    ) -> float:
+        del final_state
         if not trajectory:
             return 0.0
 
-        # SLA component based on per-step grade metadata.
         breaches = 0
         graded_steps = 0
         correct_actions = 0
         action_attempts = 0
         escalations = 0
 
-        for obs, action in trajectory:
-            grade = (obs.metadata or {}).get("grade") or {}
+        for step_idx, (_, action) in enumerate(trajectory):
+            if step_idx + 1 >= len(observation_chain):
+                break
+            post = observation_chain[step_idx + 1]
+            grade = (post.metadata or {}).get("grade") or {}
             if grade:
                 graded_steps += 1
                 if bool(grade.get("sla_breach", False)):
@@ -114,18 +127,15 @@ def task_medium_sla_safe_throughput() -> TaskSpec:
                 action_attempts += 1
                 if str(action.action_type) == "escalate":
                     escalations += 1
-                # action correctness from grade breakdown if present
                 if float(grade.get("action_score", 0.0) or 0.0) > 0.0:
                     correct_actions += 1
 
         breach_rate = (breaches / graded_steps) if graded_steps else 1.0
-        sla_score = 0.5 * (1.0 - breach_rate)  # 0.5 if no breaches
+        sla_score = 0.5 * (1.0 - breach_rate)
 
         acc = (correct_actions / action_attempts) if action_attempts else 0.0
         action_score = 0.3 * acc
 
-        # Cost discipline: allow some escalation, but penalize escalating everything.
-        # Full points if escalations <= 1, linearly down to 0 at >= 4.
         if escalations <= 1:
             cost_score = 0.2
         elif escalations >= 4:
@@ -150,7 +160,12 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
     Hard: handle dynamic arrivals while maintaining SLA and responding quickly to urgent new emails.
     """
 
-    def grader(trajectory: List[Tuple[MyObservation, Optional[MyAction]]], final_state: MyState) -> float:
+    def grader(
+        trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
+        final_state: MyState,
+        observation_chain: List[MyObservation],
+    ) -> float:
+        del final_state
         if not trajectory:
             return 0.0
 
@@ -158,12 +173,14 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
         graded_steps = 0
         invalid = 0
 
-        # Track responsiveness to new arrivals: if an arrival becomes visible, how quickly is it acted on?
         arrival_first_seen_step: Dict[str, int] = {}
         arrival_handled_step: Dict[str, int] = {}
 
-        for i, (obs, action) in enumerate(trajectory, start=1):
-            md = obs.metadata or {}
+        for step_idx, (_, action) in enumerate(trajectory):
+            if step_idx + 1 >= len(observation_chain):
+                break
+            post = observation_chain[step_idx + 1]
+            md = post.metadata or {}
             grade = md.get("grade") or {}
             if grade:
                 graded_steps += 1
@@ -173,17 +190,15 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
             if md.get("error") == "invalid_email_id_or_not_pending":
                 invalid += 1
 
-            # Record when newly arrived emails appear.
             for eid in (md.get("new_emails") or []):
-                arrival_first_seen_step.setdefault(str(eid), i)
+                arrival_first_seen_step.setdefault(str(eid), step_idx + 1)
 
             if action is not None:
-                arrival_handled_step.setdefault(str(action.email_id), i)
+                arrival_handled_step.setdefault(str(action.email_id), step_idx + 1)
 
         breach_rate = (breaches / graded_steps) if graded_steps else 1.0
         sla_component = 0.4 * (1.0 - breach_rate)
 
-        # Responsiveness: for arrived emails we saw, compute delay.
         delays: List[int] = []
         for eid, seen_step in arrival_first_seen_step.items():
             handled = arrival_handled_step.get(eid)
@@ -193,9 +208,8 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
                 delays.append(max(0, handled - seen_step))
 
         if not delays:
-            resp_component = 0.15  # neutral small credit if no arrivals observed
+            resp_component = 0.15
         else:
-            # Full credit if average delay <=1, partial if <=3, else 0.
             avg_delay = sum(delays) / len(delays)
             if avg_delay <= 1.0:
                 resp_component = 0.3
@@ -204,11 +218,13 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
             else:
                 resp_component = 0.0
 
-        # Action/response quality: use average action_score + response_score from grade breakdowns.
         action_score_sum = 0.0
         response_score_sum = 0.0
-        for obs, _ in trajectory:
-            grade = (obs.metadata or {}).get("grade") or {}
+        for step_idx in range(len(trajectory)):
+            if step_idx + 1 >= len(observation_chain):
+                break
+            post = observation_chain[step_idx + 1]
+            grade = (post.metadata or {}).get("grade") or {}
             action_score_sum += float(grade.get("action_score", 0.0) or 0.0)
             response_score_sum += float(grade.get("response_score", 0.0) or 0.0)
         denom = max(1, len(trajectory))
@@ -216,7 +232,6 @@ def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
             (response_score_sum / denom) / 0.3
         ) * 0.25
 
-        # Stability: penalize invalid actions and excessive steps.
         invalid_component = max(0.0, 0.1 - 0.05 * float(invalid))
 
         return _clip01(sla_component + resp_component + quality_component + invalid_component)
@@ -244,16 +259,18 @@ async def rollout_task(
     env: Any,
     task: TaskSpec,
     policy: Callable[[MyObservation], Optional[MyAction]],
-) -> Tuple[float, List[Tuple[MyObservation, Optional[MyAction]]], MyState]:
+) -> Tuple[float, List[Tuple[MyObservation, Optional[MyAction]]], MyState, List[MyObservation]]:
     """
     Run one episode for a task using a policy.
 
     Returns:
-        task_score, trajectory[(observation, action)], final_state
+        task_score, trajectory[(observation_before_action, action)], final_state,
+        observation_chain (initial obs, then one obs per step after each action).
     """
 
     result: StepResult[MyObservation] = await env.reset(config=task.reset_config)
     obs = result.observation
+    observation_chain: List[MyObservation] = [obs]
     trajectory: List[Tuple[MyObservation, Optional[MyAction]]] = []
 
     for _ in range(task.max_steps):
@@ -265,9 +282,8 @@ async def rollout_task(
             break
         result = await env.step(action)
         obs = result.observation
+        observation_chain.append(obs)
 
-    # Final observation (if last step ended episode) isn't included with an action; that's fine for deterministic graders.
     state: MyState = await env.state()  # type: ignore[assignment]
-    score = task.grader(trajectory, state)
-    return score, trajectory, state
-
+    score = task.grader(trajectory, state, observation_chain)
+    return score, trajectory, state, observation_chain

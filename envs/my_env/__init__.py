@@ -7,14 +7,27 @@
 """My Env Environment."""
 
 from .client import MyEnv
-from .models import MyAction, MyObservation, MyReward
+from .models import Email, MyAction, MyObservation, MyReward, PublicEmail, to_public_email
 from .tasks import TaskSpec, all_tasks
+from .training_utils import (
+    ACTION_KINDS,
+    flat_discrete_dimensions,
+    flat_index_to_slots,
+    slot_action_to_my_action,
+)
 
 __all__ = [
+    "ACTION_KINDS",
+    "Email",
     "MyAction",
     "MyObservation",
     "MyReward",
+    "PublicEmail",
     "MyEnv",
     "TaskSpec",
     "all_tasks",
+    "flat_discrete_dimensions",
+    "flat_index_to_slots",
+    "slot_action_to_my_action",
+    "to_public_email",
 ]

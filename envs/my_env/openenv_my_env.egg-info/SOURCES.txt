@@ -6,6 +6,7 @@ pyproject.toml
 ./__init__.py
 ./client.py
 ./models.py
+./tasks.py
 openenv_my_env.egg-info/PKG-INFO
 openenv_my_env.egg-info/SOURCES.txt
 openenv_my_env.egg-info/dependency_links.txt

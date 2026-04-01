@@ -122,6 +122,7 @@ async def run() -> None:
         for task in all_tasks():
             result = await env.reset(config=task.reset_config)
             obs = result.observation
+            observation_chain: List[MyObservation] = [obs]
             total_reward = 0.0
             trajectory = []
 
@@ -137,10 +138,11 @@ async def run() -> None:
                 trajectory.append((obs, action))
                 result = await env.step(action)
                 obs = result.observation
+                observation_chain.append(obs)
                 total_reward += float(result.reward or 0.0)
 
             final_state = await env.state()
-            task_score = float(task.grader(trajectory, final_state))
+            task_score = float(task.grader(trajectory, final_state, observation_chain))
             results.append({"task_score": task_score, "total_reward": total_reward})
             print(
                 f"[{task.task_id} ({task.difficulty})] task_score={task_score:.3f} total_reward={total_reward:.2f}"

@@ -50,25 +50,26 @@ This forces agents to operate under limited bandwidth like a real inbox.
 
 All schemas live in `envs/my_env/models.py`.
 
+### `PublicEmail` (agent-facing) vs `Email` (server / grading)
+
+Observations expose **`PublicEmail`** only: identity, content, priority, tier, timing, and lifecycle status. **Grader labels are never sent in `MyObservation.inbox`.**
+
+**`Email`** extends **`PublicEmail`** with fields used only for scoring:
+
+- **`ground_truth_action`**: ideal action (`reply | escalate | archive`)
+- **`required_response_keywords`**: keyword checklist for reply scoring
+
+The server keeps full **`Email`** rows internally. **`GET /state`** omits grader labels by default; set **`expose_grader_labels_in_state: true`** in `EnvConfig` when you need full rows (e.g. offline analysis). The **`MyEnv`** client parses labeled rows as **`Email`** when those keys are present.
+
 ### Email
 
-`Email` is the environment’s inbox item. Key fields:
+`Email` is the full inbox row (server + optional state export). **`PublicEmail`** includes:
 
-- **Identity & grouping**
-  - `email_id`: unique identifier (string)
-  - `thread_id`: groups related emails into threads
-- **Content**
-  - `subject`, `body`
-- **Priority signals**
-  - `priority`: `low | medium | high`
-  - `customer_tier`: `standard | premium | vip`
-- **Timing**
-  - `created_time`, `sla_limit`
-- **Lifecycle**
-  - `status`: `pending | processed`
-- **Deterministic grading labels**
-  - `ground_truth_action`: the ideal action for this email (`reply | escalate | archive`)
-  - `required_response_keywords`: keyword checklist for deterministic reply grading
+- **Identity & grouping**: `email_id`, `thread_id`
+- **Content**: `subject`, `body`
+- **Priority signals**: `priority`, `customer_tier`
+- **Timing**: `created_time`, `sla_limit`
+- **Lifecycle**: `status` (`pending | processed`)
 
 ### Action (`MyAction`)
 
@@ -84,7 +85,7 @@ What the agent receives each step:
 
 - **Inbox snapshot**
   - `current_time`
-  - `inbox`: top‑N pending emails
+  - `inbox`: top‑N pending **`PublicEmail`** rows (no grader labels)
   - `hidden_pending_count`
 - **Last step outcome fields**
   - `last_email_id`, `last_action_type`
@@ -99,7 +100,7 @@ What the agent receives each step:
 Full environment state (typically for debugging/inspection):
 
 - `current_time`
-- `emails`: full inbox list (pending + processed)
+- `emails`: full inbox list (pending + processed); each item is **`PublicEmail`** unless labels are exposed (see `expose_grader_labels_in_state`)
 - `config`: `EnvConfig` used for this episode
 - `new_emails_added`: how many arrivals have been injected so far
 
@@ -117,6 +118,12 @@ Full environment state (typically for debugging/inspection):
   - `action_durations`: e.g. `reply:2`, `escalate:1`, `archive:1`
   - `action_costs`: penalize actions (e.g., escalation fatigue)
   - `per_step_idle_cost`: small constant penalty each step
+- **Training / evaluation**
+  - `expose_grader_labels_in_state` (default `false`): when `false`, `GET /state` strips grader-only fields from emails (recommended for RL clients that poll state).
+
+### RL helpers (`training_utils.py`)
+
+For fixed discrete action spaces, use **`slot_action_to_my_action`**, **`flat_index_to_slots`**, and **`ACTION_KINDS`** to map (visible slot × action kind) ↔ `MyAction`.
 
 How to pass it at reset time:
 

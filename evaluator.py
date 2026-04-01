@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from envs.my_env.client import MyEnv
-from envs.my_env.models import Email, MyAction, MyObservation
+from envs.my_env.models import MyAction, MyObservation, PublicEmail
 from envs.my_env.tasks import TaskSpec, all_tasks, rollout_task
 
 
@@ -83,11 +83,11 @@ class EpisodeSummary:
     invalid_actions: int
 
 
-def _remaining_sla(email: Email, current_time: int) -> int:
+def _remaining_sla(email: PublicEmail, current_time: int) -> int:
     return int(email.sla_limit) - (int(current_time) - int(email.created_time))
 
 
-def _urgency_sort_key(email: Email, current_time: int) -> Tuple[int, int, int]:
+def _urgency_sort_key(email: PublicEmail, current_time: int) -> Tuple[int, int, int]:
     # Lower key is better after sort:
     # - remaining SLA ascending (smaller remaining is more urgent)
     # - priority descending
@@ -233,6 +233,7 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
         if use_llm and llm_client is not None:
             result = await env.reset(config=task.reset_config)
             obs = result.observation
+            observation_chain: List[MyObservation] = [obs]
             for step_idx in range(1, min(task.max_steps, MAX_STEPS) + 1):
                 if result.done:
                     break
@@ -240,6 +241,7 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
                 trajectory.append((obs, action))
                 result = await env.step(action)
                 obs = result.observation
+                observation_chain.append(obs)
 
                 reward = float(result.reward or 0.0)
                 total_reward += reward
@@ -257,16 +259,19 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
                 )
 
             state = await env.state()
-            task_score = float(task.grader(trajectory, state))
+            task_score = float(task.grader(trajectory, state, observation_chain))
         else:
-            task_score, traj, state = await rollout_task(env=env, task=task, policy=policy)
+            task_score, traj, state, observation_chain = await rollout_task(env=env, task=task, policy=policy)
             trajectory = traj
-            # Accumulate reward + breach stats from the actual trajectory observations.
-            for obs, action in traj:
-                grade = (obs.metadata or {}).get("grade") or {}
+            # Accumulate reward + breach stats using post-step observations aligned with each action.
+            for step_idx, (_, action) in enumerate(traj):
+                if step_idx + 1 >= len(observation_chain):
+                    break
+                post = observation_chain[step_idx + 1]
+                grade = (post.metadata or {}).get("grade") or {}
                 if bool(grade.get("sla_breach", False)):
                     sla_breaches += 1
-                if (obs.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
+                if (post.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
                     invalid_actions += 1
             # Total reward can be reconstituted only from step results; keep 0 for pure task scoring mode.
             total_reward = float(total_reward)
