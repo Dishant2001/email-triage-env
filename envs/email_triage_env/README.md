@@ -13,384 +13,324 @@ tags:
 
 # EmailTriageEnv
 
-**EmailTriageEnv** is the HTTP/WebSocket **client**; the server implements **EmailTriageEnvironment** (OpenEnv `Environment`). Each step, an agent selects one **pending** email and applies **`reply`**, **`escalate`**, or **`archive`**.
+**Train and evaluate agents on a realistic support-inbox triage loop**—SLAs, partial visibility, action costs, and dynamic arrivals—inside a proper **OpenEnv** server with HTTP, WebSocket, Docker, and optional **Hugging Face Spaces** deployment.
 
-The environment uses a **virtual clock**, **SLA deadlines**, **partial observability** (only the top‑N pending emails are visible), and optional **seeded new arrivals** during an episode.
+> *One pending email per step: **reply**, **escalate**, or **archive**. The world keeps ticking. You only see the top of the queue.*
 
-## Description and motivation
+---
 
-This is a compact **support-inbox triage** simulator: agents must prioritize under time pressure, avoid SLA breaches, balance **escalation cost** against urgency, and (when replying) satisfy a deterministic **keyword rubric**—without ever seeing grader-only labels in observations.
+## In this README
 
-**Why it exists:** It supports research and evaluation on prioritization, long-horizon policies, non-stationary inboxes (arrivals), and constrained visibility, while keeping scoring deterministic and reproducible via seeds and explicit task definitions in `tasks.py`.
+| Section | You’ll find |
+|---------|-------------|
+| [Why this matters](#why-this-matters) | Who it’s for and what gap it fills |
+| [What you get](#what-you-get-out-of-the-box) | Features and design choices at a glance |
+| [How it works](#how-it-works) | Lifecycle, observability, scoring |
+| [Benchmarks](#benchmarks) | Three tasks, task graders |
+| [Quick start & deploy](#quick-start) | Code, Docker, Hugging Face |
+| [Reference](#reference-action--observation--reward) | Schemas, modules, logging |
 
-## Setup
+---
 
-- **Python** 3.10+ (see `pyproject.toml`).
-- From **this directory** (the environment package root, e.g. `envs/email_triage_env` in the repo):
+## Why this matters
 
-  ```bash
-  uv sync
-  ```
+**Real operations don’t look like static classification.** A support or copilot agent must prioritize under deadlines, avoid burning the escalation path, write acceptable customer-facing text, and keep working while **new work arrives**. Most toy benchmarks fix the input set and hide none of the tradeoffs.
 
-- **Run the server** (after sync, `.venv` on your `PATH` or `uv run`):
+**EmailTriageEnv** compresses that story into a **deterministic, reproducible** simulator:
 
-  ```bash
-  uv run server
-  # or: uvicorn email_triage_env.server.app:app --host 0.0.0.0 --port 8000
-  ```
+- **Virtual time** and **SLA breaches** punish procrastination and wrong ordering.
+- **Top‑N visibility** forces policies to reason under **partial observability** (urgent mail can sit outside the visible slice until it surfaces).
+- **Per-action costs and durations** make “always escalate” and “always reply” both suboptimal in different ways.
+- **Optional seeded arrivals** turn the inbox into a **non-stationary** stream for harder evaluation.
 
-Default HTTP URL: `http://localhost:8000` (see `openenv.yaml`).
+That combination is **useful for research and product-facing benchmarks**: RL, preference optimization, and **LLM-driven** agents can all target the same environment and **compare on the same three graded tasks** without leaking answer keys into observations.
 
-## Quick Start
+---
 
-The simplest way to connect is the **`EmailTriageEnv`** client class:
+## What you get out of the box
 
-```python
-from email_triage_env import EmailTriageEnv, MyAction
+| Capability | Detail |
+|------------|--------|
+| **OpenEnv-native** | `EmailTriageEnv` client + `EmailTriageEnvironment` server; `reset` / `step` / `state`; `POST` + `WS /ws`. |
+| **Fair evaluation** | `PublicEmail` in observations; **`ground_truth_action`** and **keyword rubrics** stay server-side unless you explicitly expose them in state. |
+| **Dense, interpretable signal** | Per-step **normalized reward** in **[0, 1]** plus **`metadata["grade"]`** breakdown (SLA, prioritization, action match, reply rubric, costs). |
+| **Episode benchmarks** | Three **`TaskSpec`** graders in **`tasks.py`** (easy → medium → hard), each scoring **[0, 1]** independently of the mean step reward. |
+| **LLM runner** | Repo **`inference.py`**: structured **`[START]` / `[STEP]` / `[END]`** logs for leaderboard-style runs. |
+| **Shipping** | `uv` + lockfile, **Dockerfile**, **`openenv push`** path for HF Spaces, web UI at `/web`. |
 
-try:
-    # Create environment from Docker image
-    env = EmailTriageEnv.from_docker_image("email-triage-env:latest")
+**Honest scope:** `thread_id` is carried for future thread logic but **does not** yet drive dynamics or grading. The keyword rubric is **deterministic substring coverage** (plus a length fallback)—good for stable benchmarks, not a substitute for human judgment.
 
-    # Reset
-    result = env.reset(config={"top_n": 3, "seed": 1, "arrivals_enabled": True, "max_new_emails": 2})
-    print(f"current_time={result.observation.current_time} visible={len(result.observation.inbox)}")
+---
 
-    # Take one action
-    first = result.observation.inbox[0]
-    result = env.step(MyAction(email_id=first.email_id, action_type="reply", response="Thanks — we’ll investigate and share an ETA."))
-    print(f"reward={result.reward} done={result.done}")
+## How it works
 
-finally:
-    # Always clean up
-    env.close()
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph client
+        A[Agent / script]
+        B[EmailTriageEnv client]
+    end
+    subgraph server
+        C[OpenEnv HTTP / WebSocket]
+        D[EmailTriageEnvironment]
+        E[scenarios / dynamics / grader]
+    end
+    A --> B
+    B -->|reset, step, state| C
+    C --> D
+    D --> E
 ```
 
-That's it! The `EmailTriageEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+| Layer | Role |
+|--------|------|
+| **`EmailTriageEnv`** (`client.py`) | Serializes `MyAction`, parses `StepResult[MyObservation]`, one WebSocket session per server env instance. |
+| **`server/app.py`** | `create_app(EmailTriageEnvironment, …)` → `POST /reset`, `POST /step`, `GET /state`, `GET /schema`, `WS /ws`. |
+| **`EmailTriageEnvironment`** | RNG, full inbox, virtual time, config; `reset` / `step`. |
+| **`scenarios.py`** | `starter_inbox()`, `arrival_templates()`. |
+| **`dynamics.py`** | Urgency ranking, top‑N slice, time advance, optional arrivals. |
+| **`grader.py`** | `grade_step` → breakdown + normalized **`reward`**. |
+| **`tasks.py`** | Episode-level **`TaskSpec.grader`** (harness), separate from per-step reward. |
 
-## Building the Docker Image
+State changes only through **`reset`** and **`step`**. **`state()`** is for inspection; by default grader labels are stripped so RL runs don’t see the answer key—set **`expose_grader_labels_in_state: true`** in **`EnvConfig`** when you need full rows.
 
-Before using the environment, you need to build the Docker image:
+### Episode lifecycle
+
+**Reset:** Load **`EnvConfig`** (e.g. `top_n`, `seed`, arrivals budget), optionally seed RNG, deep-copy **`starter_inbox()`**, set **`current_time = 0`**, return top‑N pending by urgency plus **`hidden_pending_count`**.
+
+**Valid step:** Grade at **current** time (before advance), mark email processed, advance clock by **action duration**, maybe inject **one** templated arrival, return new top‑N and **`metadata.grade`** / **`metadata.new_emails`**.
+
+**Invalid step** (bad or stale `email_id`): Time still moves; strong negative reward; **`metadata.error`** = `invalid_email_id_or_not_pending`.
+
+**SLA** is evaluated at **step start**; new mail gets **`created_time`** equal to the clock **after** the step’s time advance.
+
+**Arrivals:** Seeded draws; probability a bit higher early in the episode; at most one new email per valid step when enabled.
+
+### Observability and urgency
+
+Only **pending** mail appears in **`inbox`**. Urgency blends **priority**, **customer tier**, and **remaining SLA**. The agent sees the **top `top_n`** by that score—not FIFO—so hidden mail can breach SLA if the policy ignores the global picture.
+
+### Per-step reward (summary)
+
+Multi-factor **deterministic** score: SLA, “did you pick the most urgent pending mail?”, **ground-truth action** match, **reply** keyword (or length) rubric, plus **action** and **idle** costs. Scalar **`reward`** is **normalized to [0, 1]**; **`metadata["grade"]`** keeps the breakdown for analysis and task graders.
+
+| Component | Role |
+|-----------|------|
+| **SLA** | Breach vs on-time at step start |
+| **Prioritization** | Match to best pending by urgency |
+| **Action** | `reply` / `escalate` / `archive` vs label |
+| **Response** | Keywords in reply text (or length proxy) |
+| **Costs** | Discourage spam escalate and useless steps |
+
+### Task score vs mean step reward
+
+**Per-step reward** shapes learning signal. **Task score** (in **`tasks.py`**) scores the **whole episode**—e.g. first-step urgency on easy, SLA + escalation discipline on medium, **responsiveness to new arrivals** on hard. They **need not** agree; a run can have high mean **`reward`** but modest **`task_score`**.
+
+---
+
+## Benchmarks
+
+Three tasks, **[0, 1]** scores, **deterministic** under fixed seeds:
+
+| Task ID | Difficulty | Max steps | What it tests |
+|---------|------------|-----------|----------------|
+| `easy_single_urgent_first` | Easy | 1 | Pick the **most urgent visible** mail and the **right** action first try. |
+| `medium_sla_safe_throughput` | Medium | 30 | Clear the queue with **few SLA breaches**, **correct actions**, **limited escalation**. |
+| `hard_dynamic_arrivals_backlog` | Hard | 30 | Same pressures **plus** **new mail**—latency to first handle of arrivals matters. |
+
+
+Repo-root **`inference.py`** drives an **LLM** against a live server and prints **`[START]` / `[STEP]` / `[END]`** lines. **`success=true`** only when the **task** grader returns a perfect **1.0**—strong step rewards alone are not enough.
+
+---
+
+## Quick start
+
+**Python 3.10+**, from this package root (e.g. `envs/email_triage_env`):
 
 ```bash
-# From this directory (where pyproject.toml and server/Dockerfile live)
+uv sync
+uv run server
+# or: uvicorn email_triage_env.server.app:app --host 0.0.0.0 --port 8000
+```
+
+Default URL: **`http://localhost:8000`** (`openenv.yaml`).
+
+The client is **async**:
+
+```python
+import asyncio
+from email_triage_env import EmailTriageEnv, MyAction
+
+
+async def main():
+    async with EmailTriageEnv(base_url="http://localhost:8000") as env:
+        result = await env.reset(
+            config={"top_n": 3, "seed": 1, "arrivals_enabled": True, "max_new_emails": 2}
+        )
+        print(f"current_time={result.observation.current_time} visible={len(result.observation.inbox)}")
+
+        first = result.observation.inbox[0]
+        result = await env.step(
+            MyAction(
+                email_id=first.email_id,
+                action_type="reply",
+                response="Thanks — we’ll investigate and share an ETA.",
+            )
+        )
+        print(f"reward={result.reward} done={result.done}")
+
+
+asyncio.run(main())
+```
+
+Use **`EmailTriageEnv.from_docker_image(...)`** (async) to start a container, connect, and **`close()`** when done.
+
+### Docker
+
+From **this directory** (`pyproject.toml` + `server/Dockerfile`):
+
+```bash
 docker build -t email-triage-env:latest -f server/Dockerfile .
 ```
 
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
+From **monorepo root** (context = whole repo):
 
 ```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
+docker build -f envs/email_triage_env/server/Dockerfile --build-arg SOURCE_DIR=envs/email_triage_env -t email-triage-env:latest .
 ```
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
+Use a repo-root **`.dockerignore`** that excludes **`**/.venv/`** so host virtualenvs are not copied into the image.
 
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
+### Hugging Face Spaces
 
 ```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
 openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
+# openenv push --repo-id username/space-name --private
 ```
 
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
+Requires HF auth. After deploy: Space URL, **`/web`**, **`/docs`**, **`/health`**, **`/ws`**.
 
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
+**Options:** `--directory`, `-d` · `--repo-id`, `-r` · `--base-image`, `-b` · `--private`
 
-## Action space
+---
 
-Actions are **`MyAction`** (`models.py`).
+## Reference: action, observation, reward
 
-| Field | Type | Description |
-|--------|------|-------------|
-| `email_id` | `str` | Target mail; must be **pending**. For valid grading on a normal step it should be one of the IDs in the current `inbox` (invalid or stale IDs still consume time and yield a low reward). |
-| `action_type` | `reply` \| `escalate` \| `archive` | Triage decision for that email. |
-| `response` | `str` | Free text; used when `action_type == "reply"` for keyword / length-based scoring (`required_response_keywords` on the server row). |
+### `MyAction` (`models.py`)
 
-## Observation space
+| Field | Type | Notes |
+|--------|------|--------|
+| `email_id` | `str` | Must be **pending**; invalid IDs waste time and hurt reward. |
+| `action_type` | `reply` \| `escalate` \| `archive` | |
+| `response` | `str` | Scored on **keywords** (server-side) when replying. |
 
 ### `MyObservation`
 
-| Field | Description |
-|--------|-------------|
-| `current_time` | Virtual time (integer). |
-| `inbox` | List of **`PublicEmail`** rows (up to **`top_n`** pending emails, urgency-ranked). No grader-only fields. |
-| `hidden_pending_count` | Number of pending emails **not** shown (partial observability). |
-| `last_email_id`, `last_action_type` | Last step’s target and action (if any). |
-| `sla_breach` | Whether the **last** handled email was acted on after its SLA deadline. |
-| `time_advance` | Virtual time consumed by the last action. |
-| `action_cost` | Configured monetary-style cost for the last action type. |
-| `done` | `True` when there are no pending emails. |
-| `reward` | Scalar step reward in **[0, 1]** (normalized shaping signal from the server). |
-| `metadata` | After a valid step: `grade` (component breakdown), `new_emails` (ids arriving that step). On invalid selection: `error` (e.g. `invalid_email_id_or_not_pending`). |
+| Field | Notes |
+|--------|--------|
+| `current_time` | After a step, reflects time **after** advance. |
+| `inbox` | Up to **`top_n`** **`PublicEmail`**, urgency-sorted; **no** grader labels. |
+| `hidden_pending_count` | Pending mail not shown. |
+| `last_email_id`, `last_action_type`, `sla_breach`, `time_advance`, `action_cost` | Describe the **last** step. |
+| `done` | No pending mail left. |
+| `reward` | Normalized **[0, 1]**. |
+| `metadata` | **`grade`**, **`new_emails`**, or **`error`**. |
 
-Reset-time knobs are passed via `reset(config={...})` using **`EnvConfig`**: e.g. `top_n`, `seed`, `arrivals_enabled`, `max_new_emails`, `action_costs`, `per_step_idle_cost`, `action_durations` (`models.py`).
+**`EnvConfig`** (at reset): `top_n`, `seed`, `arrivals_enabled`, `max_new_emails`, `action_costs`, `per_step_idle_cost`, `action_durations`, `expose_grader_labels_in_state`.
 
-### `PublicEmail` (each visible inbox row)
+**`PublicEmail` vs `Email`:** Observations use **`PublicEmail`** (+ **`thread_id`** for grouping, not scored). **`Email`** adds **`ground_truth_action`** and **`required_response_keywords`**. **`GET /state`** strips labels unless **`expose_grader_labels_in_state: true`**.
 
-| Field | Description |
-|--------|-------------|
-| `email_id`, `thread_id` | Identity / thread grouping. |
-| `subject`, `body` | Content visible to the agent. |
-| `priority` | `low` \| `medium` \| `high`. |
-| `customer_tier` | `standard` \| `premium` \| `vip`. |
-| `created_time`, `sla_limit` | For SLA reasoning. |
-| `status` | `pending` \| `processed` (inbox is normally pending-only). |
+**`MyState`:** Full clock, all emails, config, arrival counter.
 
-**Not in observations:** `ground_truth_action`, `required_response_keywords` (server-only for scoring).
+**`training_utils.py`:** **`slot_action_to_my_action`**, **`flat_index_to_slots`**, **`ACTION_KINDS`** for discrete RL spaces.
 
-## Step reward and `metadata["grade"]`
+### Server modules
 
-Each step, the server computes a **multi-factor** score (`server/grader.py`): SLA, prioritization vs most urgent pending mail, match to `ground_truth_action`, reply rubric, and action/idle costs. The scalar **`reward`** returned to the client is **normalized to [0, 1]** for a stable learning signal. The raw-style breakdown remains in **`metadata["grade"]`** for analysis and for episode task graders in `tasks.py`.
+| File | Role |
+|------|------|
+| `email_triage_environment.py` | Orchestrates reset / step / state. |
+| `scenarios.py` | Starter + arrival templates. |
+| `dynamics.py` | Urgency, top‑N, time, arrivals. |
+| `grader.py` | **`grade_step`** → **`GradeBreakdown`**. |
 
-## Tasks (benchmark suite)
+### Structured stdout (`inference.py`)
 
-Episode-level scores come from **`TaskSpec.grader`** in `tasks.py`. Each **`task_score`** is in **[0, 1]** and need not equal the mean of step rewards.
+Repo-root **`inference.py`** runs an **LLM policy** only: each step the model sees the visible inbox and must return parseable JSON for **`MyAction`**. Configure **`OPENAI_API_KEY`** or **`HF_TOKEN`**, **`MODEL_NAME`** / **`OPENAI_MODEL`**, **`OPENAI_BASE_URL`** / **`ENV_BASE_URL`** as needed.
 
-| Task ID | Difficulty | Max steps | Reset (summary) | What the grader rewards |
-|---------|------------|-----------|-----------------|-------------------------|
-| `easy_single_urgent_first` | **Easy** | 1 | `top_n=5`, `seed=0`, no arrivals | First step: pick **most urgent visible** email + **correct** action (from step metadata). |
-| `medium_sla_safe_throughput` | **Medium** | 30 | `top_n=3`, `seed=1`, no arrivals | Low **SLA breach** rate, **correct actions**, **limited escalation** (penalizes heavy escalate use). |
-| `hard_dynamic_arrivals_backlog` | **Hard** | 30 | `top_n=3`, `seed=2`, arrivals on, `max_new_emails=3` | **SLA**, **short delay** from first sighting to handling **new** mail, action/reply **quality**, few **invalid** steps. |
+1. **`[START]`** — `task`, `env`, `model`  
+2. **`[STEP]`** — `step`, `action`, `reward`, `done`, `error`  
+3. **`[END]`** — `success` (perfect task score only), `steps`, `score`, `rewards` CSV  
 
-**Expected difficulty for agents:** easy → medium → hard (single decision vs long horizon vs dynamic inbox).
-
-## Baseline scores
-
-Two metrics: repo-root **`inference.py`** runs the **LLM** policy against a live server (structured `[START]`/`[STEP]`/`[END]` logs). **`evaluator.py`** can still run a **rule** policy when no LLM is configured.
-
-| Metric | Range | Meaning |
-|--------|--------|---------|
-| `task_score` | [0, 1] | Task-specific grader for that benchmark. |
-| `mean_step_reward` | [0, 1] | Mean of per-step **`reward`** over the episode. |
-
-**Rule-policy baseline** (deterministic heuristics aligned with **`evaluator.rule_policy`**), measured **in-process** on `EmailTriageEnvironment` with the shipped scenarios/graders:
-
-| Task | `task_score` | `mean_step_reward` |
-|------|----------------|---------------------|
-| `easy_single_urgent_first` | 0.500 | 0.837 |
-| `medium_sla_safe_throughput` | 0.858 | 0.856 |
-| `hard_dynamic_arrivals_backlog` | 0.930 | 0.859 |
-| **Average `task_score`** | **0.763** | — |
-
-Figures drift if scenarios, grader weights, or normalization change; recompute in-process with the rule policy, or run **`evaluator.py`** / **`inference.py`** (LLM + server) for live numbers.
-
-## Structured stdout (`inference.py`)
-
-Repo-root **`inference.py`** runs each **`tasks.all_tasks()`** episode against a live server using an **OpenAI** model (`OPENAI_API_KEY` plus `MODEL_NAME` or `OPENAI_MODEL`). It prints **only** these line types to **stdout**, in order, **per task**:
-
-1. **`[START]`** — Once at the beginning of the episode.  
-   `task=<task_id> env=<benchmark> model=<model>`  
-   - `env` defaults to `email_triage_env`; override with **`BENCHMARK_ENV`**.  
-   - `model` uses the configured model id (spaces replaced with `_`).
-
-2. **`[STEP]`** — Once after **each** successful `env.step()`.  
-   `step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>`  
-   - **`reward`**: per-step shaped signal from the server, **two decimal places**, in **[0, 1]**.  
-   - **`done`**: lowercase `true` / `false` — inbox has no pending mail after this step.  
-   - **`error`**: `null`, or a quoted string from `observation.metadata["error"]` (e.g. invalid email / not pending).  
-   - **`action_str`**: compact encoding, e.g. `escalate('4')`, `archive('2')`, `reply('3','…')` (long replies truncated in the log).
-
-3. **`[END]`** — Always emitted **after** the client session for that task closes (including on failure), so every episode ends with exactly one **`[END]`**.  
-   `success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...,rn>`  
-   - **`steps`**: count of **`[STEP]`** lines for that episode.  
-   - **`score`**: episode **`task_score`** from **`TaskSpec.grader`** in **`tasks.py`**, **two decimal places**, clipped to **[0, 1]**. This is **not** the same as averaging step rewards.  
-   - **`rewards`**: comma-separated step rewards, each **two decimal places** (empty if no steps).  
-   - **`success`**: `true` only if **`score`** is effectively **1.0** (perfect on the task grader); otherwise `false` even when step rewards look good.
-
-**How to read a run:** Strong **`reward`** values mean the **environment grader** liked individual steps; a low **`score`** still means the **benchmark grader** (SLA breaches, escalation count, first-step urgency, handling new arrivals, etc.) penalized the trajectory. **`success=false`** with a non-zero score is therefore normal.
-
-Example (illustrative shape only):
+Example:
 
 ```text
-[START] task=easy_single_urgent_first env=email_triage_env model=gpt-4o-mini
+[START] task=easy_single_urgent_first env=email_triage_env model=openai/gpt-oss-120b:groq
 [STEP]  step=1 action=reply('1','…') reward=0.61 done=false error=null
 [END]   success=false steps=1 score=0.50 rewards=0.61
 ```
 
-Point **`ENV_BASE_URL`** at your server (default `http://localhost:8000`).
+### Extending
 
-## Advanced Usage
+Ideas: thread **follow-ups** after reply; **open/read** actions; **assignee** on escalate; richer reply checklists.
 
-### Connecting to an Existing Server
+### OpenEnv rubric hook
 
-If you already have an EmailTriageEnv server running, you can connect directly:
+If a **`rubric`** is installed on the environment, it can override **`observation.reward`** after **`grade_step`**. Default: built-in grader only.
 
-```python
-from email_triage_env import EmailTriageEnv, MyAction
-
-client = EmailTriageEnv(base_url="<ENV_HTTP_URL_HERE>")
-result = client.reset()
-result = client.step(MyAction(email_id="1", action_type="reply", response="Hello!"))
-```
-
-Note: When connecting to an existing server, `client.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
+### Advanced: existing server & concurrency
 
 ```python
 from email_triage_env import EmailTriageEnv, MyAction
 
-with EmailTriageEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: visible={len(result.observation.inbox)}")
-    if result.observation.inbox:
-        e = result.observation.inbox[0]
-        result = env.step(MyAction(email_id=e.email_id, action_type="reply", response="Thanks."))
-        print(f"reward={result.reward}")
+async def run():
+    async with EmailTriageEnv(base_url="<ENV_HTTP_URL_HERE>") as client:
+        result = await client.reset()
+        result = await client.step(MyAction(email_id="1", action_type="reply", response="Hello!"))
 ```
 
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
+For multiple concurrent WebSocket sessions, use **`EmailTriageEnvironment`** as a **class** in **`create_app`** and raise **`max_concurrent_envs`** in **`server/app.py`**.
 
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-# (EmailTriageEnvironment is defined in server/email_triage_environment.py)
-app = create_app(
-    EmailTriageEnvironment,  # server Environment class, not instance
-    MyAction,
-    MyObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from email_triage_env import EmailTriageEnv, MyAction
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with EmailTriageEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            if not result.observation.inbox:
-                break
-            eid = result.observation.inbox[0].email_id
-            result = env.step(
-                MyAction(email_id=eid, action_type="reply", response=f"Client {client_id}, step {i}")
-            )
-        return client_id, int(result.observation.current_time)
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Smoke-test the server class without HTTP:
+### Development
 
 ```bash
-# From envs/email_triage_env (same directory as pyproject.toml)
 python -c "from server.email_triage_environment import EmailTriageEnvironment; EmailTriageEnvironment()"
-```
-
-This checks that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-# From this directory, after `uv sync` (package on PYTHONPATH or installed in .venv):
-uvicorn email_triage_env.server.app:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Validate as an OpenEnv environment
-
-From the environment directory (where `openenv.yaml` is located):
-
-```bash
 openenv validate
 ```
 
-## Usage from the meta-openenv monorepo
-
-If you run tools from the **repository root** with `envs` on `PYTHONPATH`, use:
+### Monorepo imports
 
 ```python
 from envs.email_triage_env.client import EmailTriageEnv
 from envs.email_triage_env.models import MyAction
 ```
 
-Then point the client at `ENV_BASE_URL` (e.g. `http://localhost:8000`) as in repo-root `inference.py` / `evaluator.py`.
+---
 
-## See also
-
-- [`documentation.md`](documentation.md) — schemas, API surfaces, agent design notes  
-- [`explanation.md`](explanation.md) — end-to-end flow, rewards, task graders vs step reward  
-
-## Project Structure
+## Project structure
 
 ```
 email_triage_env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Exports EmailTriageEnv client
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # EmailTriageEnv client
-├── models.py              # Action and Observation models
+├── .dockerignore
+├── __init__.py
+├── README.md
+├── openenv.yaml
+├── pyproject.toml
+├── uv.lock
+├── training_utils.py
+├── client.py
+├── models.py
+├── documentation.md      # stub → see README
+├── explanation.md        # stub → see README
 └── server/
-    ├── __init__.py        # Exports EmailTriageEnvironment
-    ├── email_triage_environment.py  # EmailTriageEnvironment (OpenEnv server class)
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+    ├── app.py
+    ├── email_triage_environment.py
+    ├── scenarios.py
+    ├── dynamics.py
+    ├── grader.py
+    └── Dockerfile
 ```
+
+---
+
+*EmailTriageEnv: a compact, reproducible inbox for agents that need to do more than classify a fixed list—prioritize, commit, and keep up when the queue moves.*
