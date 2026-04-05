@@ -1,8 +1,8 @@
 """
 Legacy sample inference script.
 
-This repository's required baseline entrypoint is `inference.py` (repo root),
-which runs EmailTriageEnv inbox triage over 3 tasks (easy/medium/hard).
+This repository's baseline entrypoint is `inference.py` (repo root), which runs
+EmailTriageEnv over 3 tasks using the configured OpenAI model (requires API key + model name).
 """
 
 from inference import main

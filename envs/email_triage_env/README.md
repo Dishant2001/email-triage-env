@@ -197,14 +197,14 @@ Episode-level scores come from **`TaskSpec.grader`** in `tasks.py`. Each **`task
 
 ## Baseline scores
 
-Two metrics (see repo-root **`inference.py`** for the same loop against a live server):
+Two metrics: repo-root **`inference.py`** runs the **LLM** policy against a live server (structured `[START]`/`[STEP]`/`[END]` logs). **`evaluator.py`** can still run a **rule** policy when no LLM is configured.
 
 | Metric | Range | Meaning |
 |--------|--------|---------|
 | `task_score` | [0, 1] | Task-specific grader for that benchmark. |
 | `mean_step_reward` | [0, 1] | Mean of per-step **`reward`** over the episode. |
 
-**Rule-policy baseline** (deterministic policy matching `inference._rule_policy`), measured **in-process** on `EmailTriageEnvironment` with the shipped scenarios/graders:
+**Rule-policy baseline** (deterministic heuristics aligned with **`evaluator.rule_policy`**), measured **in-process** on `EmailTriageEnvironment` with the shipped scenarios/graders:
 
 | Task | `task_score` | `mean_step_reward` |
 |------|----------------|---------------------|
@@ -213,7 +213,42 @@ Two metrics (see repo-root **`inference.py`** for the same loop against a live s
 | `hard_dynamic_arrivals_backlog` | 0.930 | 0.859 |
 | **Average `task_score`** | **0.763** | — |
 
-Figures drift if scenarios, grader weights, or normalization change; recompute with `python inference.py` (against a server matching this code) or by replaying the same policy in-process.
+Figures drift if scenarios, grader weights, or normalization change; recompute in-process with the rule policy, or run **`evaluator.py`** / **`inference.py`** (LLM + server) for live numbers.
+
+## Structured stdout (`inference.py`)
+
+Repo-root **`inference.py`** runs each **`tasks.all_tasks()`** episode against a live server using an **OpenAI** model (`OPENAI_API_KEY` plus `MODEL_NAME` or `OPENAI_MODEL`). It prints **only** these line types to **stdout**, in order, **per task**:
+
+1. **`[START]`** — Once at the beginning of the episode.  
+   `task=<task_id> env=<benchmark> model=<model>`  
+   - `env` defaults to `email_triage_env`; override with **`BENCHMARK_ENV`**.  
+   - `model` uses the configured model id (spaces replaced with `_`).
+
+2. **`[STEP]`** — Once after **each** successful `env.step()`.  
+   `step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>`  
+   - **`reward`**: per-step shaped signal from the server, **two decimal places**, in **[0, 1]**.  
+   - **`done`**: lowercase `true` / `false` — inbox has no pending mail after this step.  
+   - **`error`**: `null`, or a quoted string from `observation.metadata["error"]` (e.g. invalid email / not pending).  
+   - **`action_str`**: compact encoding, e.g. `escalate('4')`, `archive('2')`, `reply('3','…')` (long replies truncated in the log).
+
+3. **`[END]`** — Always emitted **after** the client session for that task closes (including on failure), so every episode ends with exactly one **`[END]`**.  
+   `success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...,rn>`  
+   - **`steps`**: count of **`[STEP]`** lines for that episode.  
+   - **`score`**: episode **`task_score`** from **`TaskSpec.grader`** in **`tasks.py`**, **two decimal places**, clipped to **[0, 1]**. This is **not** the same as averaging step rewards.  
+   - **`rewards`**: comma-separated step rewards, each **two decimal places** (empty if no steps).  
+   - **`success`**: `true` only if **`score`** is effectively **1.0** (perfect on the task grader); otherwise `false` even when step rewards look good.
+
+**How to read a run:** Strong **`reward`** values mean the **environment grader** liked individual steps; a low **`score`** still means the **benchmark grader** (SLA breaches, escalation count, first-step urgency, handling new arrivals, etc.) penalized the trajectory. **`success=false`** with a non-zero score is therefore normal.
+
+Example (illustrative shape only):
+
+```text
+[START] task=easy_single_urgent_first env=email_triage_env model=gpt-4o-mini
+[STEP]  step=1 action=reply('1','…') reward=0.61 done=false error=null
+[END]   success=false steps=1 score=0.50 rewards=0.61
+```
+
+Point **`ENV_BASE_URL`** at your server (default `http://localhost:8000`).
 
 ## Advanced Usage
 
