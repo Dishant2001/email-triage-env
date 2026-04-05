@@ -1,3 +1,0 @@
-env.reset()
-
-Now in env.step()

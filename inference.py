@@ -42,7 +42,8 @@ API_BASE_URL = (
 BENCHMARK_ENV = os.getenv("BENCHMARK_ENV") or "email_triage_env"
 
 TEMPERATURE = float(os.getenv("TEMPERATURE") or "0.2")
-MAX_TOKENS = int(os.getenv("MAX_TOKENS") or "220")
+# JSON + reply body can exceed small limits; truncation yields unclosed strings and parse failure.
+MAX_TOKENS = int(os.getenv("MAX_TOKENS") or "1024")
 MAX_STEPS = int(os.getenv("MAX_STEPS") or "30")
 
 
@@ -110,9 +111,11 @@ async def _llm_action(client: OpenAI, obs: MyObservation) -> Optional[MyAction]:
         return None
 
     system = (
-        "You are an inbox triage agent. Output exactly one JSON object with keys "
+        "You are an inbox triage agent. Output exactly one compact JSON object with keys "
         '{"email_id": string, "action_type": "reply"|"escalate"|"archive", "response": string}. '
-        "email_id must be one of the visible emails (use the exact string ids from the list)."
+        "email_id must be one of the visible emails (use the exact string ids from the list). "
+        "For action_type escalate or archive, set response to \"\" (empty string). "
+        "For reply only, keep response to one or two short sentences so the JSON stays complete."
     )
     user = {"current_time": int(obs.current_time), "visible_emails": visible}
     allowed_ids = _visible_id_set(visible)
@@ -135,8 +138,11 @@ async def _llm_action(client: OpenAI, obs: MyObservation) -> Optional[MyAction]:
 
     match = re.search(r"\{[\s\S]*\}", text)
     if not match:
+        hint = ""
+        if text.lstrip().startswith("{") and text.rstrip().endswith("}") is False:
+            hint = " (output looks truncated — raise MAX_TOKENS or shorten the model's response field)"
         print(
-            f"inference: model returned no JSON object (first 500 chars): {text[:500]!r}",
+            f"inference: model returned no parseable JSON object{hint} (first 500 chars): {text[:500]!r}",
             file=sys.stderr,
         )
         return None
