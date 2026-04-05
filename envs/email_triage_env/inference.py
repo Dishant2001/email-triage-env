@@ -9,14 +9,14 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from envs.email_triage_env.client import EmailTriageEnv
-from envs.email_triage_env.models import MyAction, MyObservation
-from envs.email_triage_env.tasks import TaskSpec, all_tasks
+from client import EmailTriageEnv
+from models import MyAction, MyObservation
+from tasks import TaskSpec, all_tasks
 
 # OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
 
-ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "https://dishant012001-email-triage-env.hf.space"
+ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "openai/gpt-oss-120b:groq"
 HF_TOKEN = os.getenv("HF_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
