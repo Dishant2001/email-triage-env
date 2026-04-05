@@ -1,0 +1,7 @@
+# Used when build context is the monorepo root (e.g. email_triage_env image with SOURCE_DIR).
+envs/**/.venv/
+**/.venv/
+venv/
+.git/
+**/__pycache__/
+**/*.py[cod]

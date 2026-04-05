@@ -31,7 +31,7 @@ load_dotenv()
 # OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
 
-ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
+ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "https://dishant012001-email-triage-env.hf.space"
 MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "openai/gpt-oss-120b:groq"
 HF_TOKEN = os.getenv("HF_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
