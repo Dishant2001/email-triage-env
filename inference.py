@@ -20,9 +20,9 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from client import EmailTriageEnv
-from models import MyAction, MyObservation
-from tasks import TaskSpec, all_tasks
+from envs.email_triage_env.client import EmailTriageEnv
+from envs.email_triage_env.models import MyAction, MyObservation
+from envs.email_triage_env.tasks import TaskSpec, all_tasks
 
 from dotenv import load_dotenv
 
