@@ -1,14 +1,3 @@
-"""
-Baseline inference runner for EmailTriageEnv (OpenEnv).
-
-Emits structured stdout: [START], one [STEP] per env.step(), [END] per task.
-
-LLM calls use the OpenAI client against Hugging Face's router by default
-(`https://router.huggingface.co/v1`). Set HF_TOKEN (recommended) or
-OPENAI_API_KEY, plus MODEL_NAME or OPENAI_MODEL. Override the base URL with
-OPENAI_BASE_URL or API_BASE_URL (e.g. OpenAI or Groq) if needed.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -23,10 +12,6 @@ from openai import OpenAI
 from envs.email_triage_env.client import EmailTriageEnv
 from envs.email_triage_env.models import MyAction, MyObservation
 from envs.email_triage_env.tasks import TaskSpec, all_tasks
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
