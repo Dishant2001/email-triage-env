@@ -22,7 +22,8 @@ RUN apt-get update && \
 
 # Build argument to control whether we're building standalone or in-repo
 ARG BUILD_MODE=in-repo
-ARG ENV_NAME=my_env
+# Documented for openenv / CI; image runtime does not consume it today
+ARG ENV_NAME=email_triage_env
 
 # Copy environment code (always at root of build context)
 COPY . /app/env
@@ -68,13 +69,14 @@ COPY --from=builder /app/env /app/env
 # Set PATH to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Set PYTHONPATH so imports work correctly
+# Source tree on path: supports flat `server.app` / `models` fallbacks in code; the
+# installed package (below) is the primary import path at runtime.
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
-# Health check
+# Health check (requires `curl` in the runtime base image)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the FastAPI server
-# The module path is constructed to work with the /app/env structure
-CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]
+# Run FastAPI via the installed package (matches pyproject `server` script and `python -m email_triage_env.server.app`)
+WORKDIR /app/env
+CMD ["uvicorn", "email_triage_env.server.app:app", "--host", "0.0.0.0", "--port", "8000"]

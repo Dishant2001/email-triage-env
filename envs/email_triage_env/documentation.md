@@ -1,13 +1,13 @@
-# Inbox Management Environment Documentation
+# Inbox Management Environment Documentation (EmailTriageEnv)
 
-This environment simulates **multi-email inbox triage with SLA awareness**. An agent repeatedly selects one pending email and takes an action (`reply`, `escalate`, `archive`) while a **virtual clock** advances and new emails may arrive. Rewards are computed deterministically from a rubric-like breakdown.
+**EmailTriageEnv** (client) and **EmailTriageEnvironment** (server) simulate **multi-email inbox triage with SLA awareness**. An agent repeatedly selects one pending email and takes an action (`reply`, `escalate`, `archive`) while a **virtual clock** advances and new emails may arrive. Rewards are computed deterministically from a rubric-like breakdown.
 
 The implementation follows the standard OpenEnv server/client structure:
 
-- **Server**: `envs/my_env/server/app.py` exposes HTTP + WebSocket endpoints via OpenEnv.
-- **Environment logic**: `envs/my_env/server/my_env_environment.py` (orchestrator).
-- **Models**: `envs/my_env/models.py` (Action/Observation/State schemas).
-- **Client**: `envs/my_env/client.py` (typed parsing + payload shaping).
+- **Server**: `envs/email_triage_env/server/app.py` exposes HTTP + WebSocket endpoints via OpenEnv.
+- **Environment logic**: `envs/email_triage_env/server/email_triage_environment.py` (orchestrator).
+- **Models**: `envs/email_triage_env/models.py` (Action/Observation/State schemas).
+- **Client**: `envs/email_triage_env/client.py` (typed parsing + payload shaping).
 
 ## Core Concepts
 
@@ -48,7 +48,7 @@ This forces agents to operate under limited bandwidth like a real inbox.
 
 ## Data Model Reference (Schemas)
 
-All schemas live in `envs/my_env/models.py`.
+All schemas live in `envs/email_triage_env/models.py`.
 
 ### `PublicEmail` (agent-facing) vs `Email` (server / grading)
 
@@ -59,7 +59,7 @@ Observations expose **`PublicEmail`** only: identity, content, priority, tier, t
 - **`ground_truth_action`**: ideal action (`reply | escalate | archive`)
 - **`required_response_keywords`**: keyword checklist for reply scoring
 
-The server keeps full **`Email`** rows internally. **`GET /state`** omits grader labels by default; set **`expose_grader_labels_in_state: true`** in `EnvConfig` when you need full rows (e.g. offline analysis). The **`MyEnv`** client parses labeled rows as **`Email`** when those keys are present.
+The server keeps full **`Email`** rows internally. **`GET /state`** omits grader labels by default; set **`expose_grader_labels_in_state: true`** in `EnvConfig` when you need full rows (e.g. offline analysis). The **`EmailTriageEnv`** client parses labeled rows as **`Email`** when those keys are present.
 
 ### Email
 
@@ -135,7 +135,7 @@ env.reset(config={"top_n": 3, "seed": 123, "arrivals_enabled": True, "max_new_em
 
 The server is split into small modules for clarity and extensibility.
 
-### `server/my_env_environment.py` (Orchestrator)
+### `server/email_triage_environment.py` (Orchestrator)
 
 Responsibilities:
 

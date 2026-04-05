@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""My Env Environment Client."""
+"""EmailTriageEnv client (WebSocket session to the inbox triage server)."""
 
 from typing import Dict, List, Optional, cast
 
@@ -15,11 +15,11 @@ from openenv.core.env_server.types import State
 from .models import Email, MyAction, MyObservation, MyState, PublicEmail
 
 
-class MyEnv(
+class EmailTriageEnv(
     EnvClient[MyAction, MyObservation, State]
 ):
     """
-    Client for the My Env Environment.
+    Client for EmailTriageEnv (connects to a server running :class:`EmailTriageEnvironment`).
 
     This client maintains a persistent WebSocket connection to the environment server,
     enabling efficient multi-step interactions with lower latency.
@@ -27,7 +27,7 @@ class MyEnv(
 
     Example:
         >>> # Connect to a running server
-        >>> with MyEnv(base_url="http://localhost:8000") as client:
+        >>> with EmailTriageEnv(base_url="http://localhost:8000") as client:
         ...     result = client.reset()
         ...     print(result.observation.current_time)
         ...
@@ -36,10 +36,10 @@ class MyEnv(
 
     Example with Docker:
         >>> # Automatically start container and connect
-        >>> client = MyEnv.from_docker_image("my_env-env:latest")
+        >>> client = EmailTriageEnv.from_docker_image("email-triage-env:latest")
         >>> try:
         ...     result = client.reset()
-        ...     result = client.step(MyAction(message="Test"))
+        ...     result = client.step(MyAction(email_id="1", action_type="reply", response="Test"))
         ... finally:
         ...     client.close()
     """

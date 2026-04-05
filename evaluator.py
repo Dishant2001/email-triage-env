@@ -2,7 +2,7 @@
 Inbox Environment Evaluator
 ==========================
 
-This script runs one or more evaluation episodes against the MyEnv inbox server.
+This script runs one or more evaluation episodes against the EmailTriageEnv inbox server.
 
 It is intentionally structured like `sample_inference_script.py`:
 - create client
@@ -29,9 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
-from envs.my_env.client import MyEnv
-from envs.my_env.models import MyAction, MyObservation, PublicEmail
-from envs.my_env.tasks import TaskSpec, all_tasks, rollout_task
+from envs.email_triage_env.client import EmailTriageEnv
+from envs.email_triage_env.models import MyAction, MyObservation, PublicEmail
+from envs.email_triage_env.tasks import TaskSpec, all_tasks, rollout_task
 
 
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")  # optional override
@@ -77,7 +77,7 @@ class EpisodeSummary:
     task_id: str
     difficulty: str
     steps: int
-    total_reward: float
+    mean_step_reward: float  # mean of per-step rewards in [0, 1]
     task_score: float
     sla_breaches: int
     invalid_actions: int
@@ -209,7 +209,8 @@ async def llm_policy(client: OpenAI, obs: MyObservation, history: List[str], ste
 
 async def run_task(task: TaskSpec) -> EpisodeSummary:
     history: List[str] = []
-    total_reward = 0.0
+    reward_sum = 0.0
+    reward_steps = 0
     sla_breaches = 0
     invalid_actions = 0
     trajectory: List[Tuple[MyObservation, Optional[MyAction]]] = []
@@ -222,7 +223,7 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
             kwargs["base_url"] = OPENAI_BASE_URL
         llm_client = OpenAI(**kwargs)
 
-    async with MyEnv(base_url=BASE_URL) as env:
+    async with EmailTriageEnv(base_url=BASE_URL) as env:
         # Use the task suite runner for deterministic task scores.
         def policy(obs: MyObservation) -> Optional[MyAction]:
             # If LLM enabled, we drive it through the same strict JSON prompt used previously.
@@ -244,7 +245,8 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
                 observation_chain.append(obs)
 
                 reward = float(result.reward or 0.0)
-                total_reward += reward
+                reward_sum += reward
+                reward_steps += 1
 
                 grade = (obs.metadata or {}).get("grade") or {}
                 if bool(grade.get("sla_breach", False)):
@@ -254,7 +256,7 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
 
                 history.append(
                     f"t={obs.current_time} action=({action.email_id},{action.action_type}) "
-                    f"reward={reward:+.2f} breach={bool(grade.get('sla_breach', False))} "
+                    f"reward={reward:.3f} breach={bool(grade.get('sla_breach', False))} "
                     f"new={len((obs.metadata or {}).get('new_emails') or [])}"
                 )
 
@@ -263,7 +265,6 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
         else:
             task_score, traj, state, observation_chain = await rollout_task(env=env, task=task, policy=policy)
             trajectory = traj
-            # Accumulate reward + breach stats using post-step observations aligned with each action.
             for step_idx, (_, action) in enumerate(traj):
                 if step_idx + 1 >= len(observation_chain):
                     break
@@ -273,14 +274,18 @@ async def run_task(task: TaskSpec) -> EpisodeSummary:
                     sla_breaches += 1
                 if (post.metadata or {}).get("error") == "invalid_email_id_or_not_pending":
                     invalid_actions += 1
-            # Total reward can be reconstituted only from step results; keep 0 for pure task scoring mode.
-            total_reward = float(total_reward)
+                r = post.reward
+                if r is not None:
+                    reward_sum += float(r)
+                    reward_steps += 1
+
+    mean_step_reward = reward_sum / reward_steps if reward_steps else 0.0
 
     return EpisodeSummary(
         task_id=task.task_id,
         difficulty=task.difficulty,
-        steps=len(history),
-        total_reward=total_reward,
+        steps=len(trajectory),
+        mean_step_reward=mean_step_reward,
         task_score=float(task_score),
         sla_breaches=sla_breaches,
         invalid_actions=invalid_actions,
@@ -294,7 +299,7 @@ async def main() -> None:
         results.append(summary)
         print(
             f"[{summary.task_id} ({summary.difficulty})] steps={summary.steps} "
-            f"task_score={summary.task_score:.3f} total_reward={summary.total_reward:.2f} "
+            f"task_score={summary.task_score:.3f} mean_step_reward={summary.mean_step_reward:.3f} "
             f"sla_breaches={summary.sla_breaches} invalid_actions={summary.invalid_actions}"
         )
 

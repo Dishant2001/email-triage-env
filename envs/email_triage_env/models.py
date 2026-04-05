@@ -5,9 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Data models for the My Env Environment.
+Data models for EmailTriageEnv / EmailTriageEnvironment.
 
-The my_env environment is an inbox management environment where an agent triages
+The inbox triage environment where an agent triages
 multiple emails under SLA deadlines.
 
 Agent-facing observations use :class:`PublicEmail` only (no grader labels).

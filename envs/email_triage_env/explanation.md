@@ -1,6 +1,6 @@
-# MyEnv: End-to-end flow, rewards, and graders
+# EmailTriageEnv: End-to-end flow, rewards, and graders
 
-This document describes how the **MyEnv** inbox triage environment works from **outside in** (client → server → state) and **inside out** (state → observation → reward → metadata). It complements `documentation.md`, which lists schemas and API surfaces in more reference style.
+This document describes how **EmailTriageEnv** (client) and **EmailTriageEnvironment** (server) work from **outside in** (client → server → state) and **inside out** (state → observation → reward → metadata). It complements `documentation.md`, which lists schemas and API surfaces in more reference style.
 
 ---
 
@@ -10,11 +10,11 @@ This document describes how the **MyEnv** inbox triage environment works from **
 flowchart LR
     subgraph client
         A[Agent / script]
-        B[MyEnv client]
+        B[EmailTriageEnv client]
     end
     subgraph server
         C[OpenEnv HTTP / WebSocket]
-        D[MyEnvironment]
+        D[EmailTriageEnvironment]
         E[scenarios / dynamics / grader]
     end
     A --> B
@@ -25,13 +25,13 @@ flowchart LR
 
 | Layer | Role |
 |--------|------|
-| **`MyEnv` client** (`envs/my_env/client.py`) | Serializes `MyAction` to JSON, parses `StepResult[MyObservation]`, keeps a WebSocket session to one server-side environment instance. |
-| **Server** (`envs/my_env/server/app.py`) | OpenEnv `create_app(MyEnvironment, …)` exposes `POST /reset`, `POST /step`, `GET /state`, `GET /schema`, and `WS /ws`. |
-| **`MyEnvironment`** (`envs/my_env/server/my_env_environment.py`) | Owns RNG, full inbox, virtual time, config; implements `reset` and `step`. |
-| **Scenarios** (`envs/my_env/server/scenarios.py`) | Starter inbox + arrival templates (content). |
-| **Dynamics** (`envs/my_env/server/dynamics.py`) | Urgency ranking, time advance per action, optional new arrivals. |
-| **Grader** (`envs/my_env/server/grader.py`) | Per-step scalar reward breakdown (`GradeBreakdown`). |
-| **Tasks** (`envs/my_env/tasks.py`) | Optional **episode-level** scores that aggregate trajectories (evaluation harness), separate from per-step reward. |
+| **`EmailTriageEnv` client** (`envs/email_triage_env/client.py`) | Serializes `MyAction` to JSON, parses `StepResult[MyObservation]`, keeps a WebSocket session to one server-side environment instance. |
+| **Server** (`envs/email_triage_env/server/app.py`) | OpenEnv `create_app(EmailTriageEnvironment, …)` exposes `POST /reset`, `POST /step`, `GET /state`, `GET /schema`, and `WS /ws`. |
+| **`EmailTriageEnvironment`** (`envs/email_triage_env/server/email_triage_environment.py`) | Owns RNG, full inbox, virtual time, config; implements `reset` and `step`. |
+| **Scenarios** (`envs/email_triage_env/server/scenarios.py`) | Starter inbox + arrival templates (content). |
+| **Dynamics** (`envs/email_triage_env/server/dynamics.py`) | Urgency ranking, time advance per action, optional new arrivals. |
+| **Grader** (`envs/email_triage_env/server/grader.py`) | Per-step scalar reward breakdown (`GradeBreakdown`). |
+| **Tasks** (`envs/email_triage_env/tasks.py`) | Optional **episode-level** scores that aggregate trajectories (evaluation harness), separate from per-step reward. |
 
 The agent never mutates server state except through **`reset`** and **`step`**. **`state`** returns `MyState` (config, clock, emails). By default, emails omit grader-only fields so clients can call **`state()`** during RL without leaking the answer key; set **`expose_grader_labels_in_state`** in `EnvConfig` when you need full rows (e.g. inspection).
 
@@ -143,7 +143,7 @@ If **`email_id`** is missing or not **pending** (wrong id, already processed):
 
 - **No** `grade_step` on a real email.
 - Time still advances using **`action_durations`** for the **declared** `action_type`.
-- **Reward** ≈ **`-1.0 - action_cost - per_step_idle_cost`** (see `my_env_environment.py`).
+- **Reward** ≈ **`-1.0 - action_cost - per_step_idle_cost`** (see `email_triage_environment.py`).
 - **`metadata.error`** = `"invalid_email_id_or_not_pending"`.
 
 So invalid actions waste time and can let **SLA** slip on emails the agent did not handle.
@@ -193,9 +193,9 @@ Episode graders take **`observation_chain`**: `[obs_after_reset, obs_after_step_
 | File | Responsibility |
 |------|------------------|
 | `models.py` | `MyAction`, `MyObservation`, `MyState`, `Email`, `EnvConfig` |
-| `client.py` | Wire protocol parsing; `MyEnv` session |
+| `client.py` | Wire protocol parsing; `EmailTriageEnv` session |
 | `server/app.py` | HTTP/WS app factory |
-| `server/my_env_environment.py` | `reset` / `step` orchestration |
+| `server/email_triage_environment.py` | `reset` / `step` orchestration |
 | `server/scenarios.py` | `starter_inbox()`, `arrival_templates()` |
 | `server/dynamics.py` | Urgency, top-N selection, time advance, arrivals |
 | `server/grader.py` | `grade_step` → `GradeBreakdown` |
@@ -205,8 +205,8 @@ Episode graders take **`observation_chain`**: `[obs_after_reset, obs_after_step_
 
 ## 13. Optional rubric hook
 
-`MyEnvironment` inherits OpenEnv’s **`rubric`** mechanism: if set, **`observation.reward`** can be replaced by **`_apply_rubric`** after the normal breakdown. Default runs use the built-in **`grade_step`** total only.
+`EmailTriageEnvironment` inherits OpenEnv’s **`rubric`** mechanism: if set, **`observation.reward`** can be replaced by **`_apply_rubric`** after the normal breakdown. Default runs use the built-in **`grade_step`** total only.
 
 ---
 
-*This file is descriptive of the implementation in this repository as of the time it was written; if behavior changes, verify against `my_env_environment.py` and `grader.py`.*
+*This file is descriptive of the implementation in this repository as of the time it was written; if behavior changes, verify against `email_triage_environment.py` and `grader.py`.*

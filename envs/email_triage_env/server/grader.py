@@ -28,6 +28,34 @@ def _best_email(pending: List[Email], current_time: int) -> Email | None:
     return max(pending, key=lambda e: urgency_score(e, current_time))
 
 
+def step_reward_bounds(config: EnvConfig) -> tuple[float, float]:
+    """
+    Min/max possible total from ``grade_step`` and invalid-action penalties, given ``action_costs``.
+
+    Used to map raw step totals to ``[0, 1]`` without changing component breakdowns in metadata.
+    """
+    costs = list(config.action_costs.values()) if config.action_costs else [0.0]
+    max_c = max(costs)
+    min_c = min(costs)
+    idle = float(config.per_step_idle_cost)
+    lo = -1.0 - max_c - idle
+    hi = 0.5 + 0.4 + 0.3 + 0.3 - min_c - idle
+    return lo, hi
+
+
+def normalize_step_reward_to_unit(raw: float, config: EnvConfig) -> float:
+    """Affine map from ``step_reward_bounds`` range to ``[0, 1]`` (clamped)."""
+    lo, hi = step_reward_bounds(config)
+    if hi <= lo:
+        return 0.5
+    x = (raw - lo) / (hi - lo)
+    return clip01(x)
+
+
+def clip01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
+
+
 def _response_keyword_score(action: MyAction, email: Email) -> float:
     if action.action_type != "reply":
         return 0.0

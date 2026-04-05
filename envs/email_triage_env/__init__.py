@@ -4,9 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""My Env Environment."""
+"""EmailTriageEnv package (import as ``email_triage_env``)."""
 
-from .client import MyEnv
+from .client import EmailTriageEnv
 from .models import Email, MyAction, MyObservation, MyReward, PublicEmail, to_public_email
 from .tasks import TaskSpec, all_tasks
 from .training_utils import (
@@ -23,7 +23,7 @@ __all__ = [
     "MyObservation",
     "MyReward",
     "PublicEmail",
-    "MyEnv",
+    "EmailTriageEnv",
     "TaskSpec",
     "all_tasks",
     "flat_discrete_dimensions",

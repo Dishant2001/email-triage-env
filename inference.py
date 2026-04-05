@@ -1,5 +1,5 @@
 """
-Baseline inference runner for the MyEnv OpenEnv environment.
+Baseline inference runner for EmailTriageEnv (OpenEnv).
 
 Requirements satisfied:
 - Uses OpenAI Python client
@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from envs.my_env.client import MyEnv
-from envs.my_env.models import MyAction, MyObservation
-from envs.my_env.tasks import all_tasks
+from envs.email_triage_env.client import EmailTriageEnv
+from envs.email_triage_env.models import MyAction, MyObservation
+from envs.email_triage_env.tasks import all_tasks
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -121,12 +121,12 @@ async def run() -> None:
     use_llm = llm_client is not None
 
     results: List[Dict[str, float]] = []
-    async with MyEnv(base_url=ENV_BASE_URL) as env:
+    async with EmailTriageEnv(base_url=ENV_BASE_URL) as env:
         for task in all_tasks():
             result = await env.reset(config=task.reset_config)
             obs = result.observation
             observation_chain: List[MyObservation] = [obs]
-            total_reward = 0.0
+            step_rewards: List[float] = []
             trajectory = []
 
             for _ in range(min(task.max_steps, MAX_STEPS)):
@@ -142,13 +142,15 @@ async def run() -> None:
                 result = await env.step(action)
                 obs = result.observation
                 observation_chain.append(obs)
-                total_reward += float(result.reward or 0.0)
+                step_rewards.append(float(result.reward or 0.0))
 
             final_state = await env.state()
             task_score = float(task.grader(trajectory, final_state, observation_chain))
-            results.append({"task_score": task_score, "total_reward": total_reward})
+            mean_step_reward = sum(step_rewards) / len(step_rewards) if step_rewards else 0.0
+            results.append({"task_score": task_score, "mean_step_reward": mean_step_reward})
             print(
-                f"[{task.task_id} ({task.difficulty})] task_score={task_score:.3f} total_reward={total_reward:.2f}"
+                f"[{task.task_id} ({task.difficulty})] task_score={task_score:.3f} "
+                f"mean_step_reward={mean_step_reward:.3f}"
             )
 
     avg = sum(r["task_score"] for r in results) / max(1, len(results))

@@ -5,9 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-My Env Environment Implementation.
+EmailTriageEnvironment: OpenEnv ``Environment`` implementation.
 
-AI-powered inbox management environment (multi-email triage with SLA awareness).
+AI-powered inbox management (multi-email triage with SLA awareness).
 
 The environment simulates a dynamic inbox. Each step, an agent selects one pending
 email and takes an action: reply, escalate, or archive. A virtual clock advances
@@ -34,7 +34,7 @@ try:
         next_email_id,
         select_top_n_pending,
     )
-    from .grader import grade_step
+    from .grader import clip01, grade_step, normalize_step_reward_to_unit
     from .scenarios import arrival_templates, starter_inbox
 except ImportError:  # pragma: no cover
     from server.dynamics import (
@@ -43,13 +43,13 @@ except ImportError:  # pragma: no cover
         next_email_id,
         select_top_n_pending,
     )
-    from server.grader import grade_step
+    from server.grader import clip01, grade_step, normalize_step_reward_to_unit
     from server.scenarios import arrival_templates, starter_inbox
 
 
-class MyEnvironment(Environment):
+class EmailTriageEnvironment(Environment):
     """
-    Inbox triage environment.
+    Inbox triage server environment (``EmailTriageEnvironment``).
 
     - **State**: full inbox (all emails) + virtual clock (`current_time`)
     - **Observation**: snapshot of pending emails (currently returns full pending list)
@@ -60,7 +60,7 @@ class MyEnvironment(Environment):
     # Enable concurrent WebSocket sessions.
     # Set to True if your environment isolates state between instances.
     # When True, multiple WebSocket clients can connect simultaneously, each
-    # getting their own environment instance (when using factory mode in app.py).
+    # getting its own environment instance (when using factory mode in app.py).
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     def __init__(self):
@@ -156,7 +156,10 @@ class MyEnvironment(Environment):
                 last_action_type=action.action_type,
                 sla_breach=False,
                 done=len(self._pending()) == 0,
-                reward=-1.0 - action_cost - float(self._state.config.per_step_idle_cost),
+                reward=normalize_step_reward_to_unit(
+                    -1.0 - action_cost - float(self._state.config.per_step_idle_cost),
+                    self._state.config,
+                ),
                 time_advance=dyn.time_advance,
                 action_cost=action_cost,
                 metadata={"error": "invalid_email_id_or_not_pending"},
@@ -171,7 +174,7 @@ class MyEnvironment(Environment):
             current_time=self._state.current_time,
             config=self._state.config,
         )
-        reward = breakdown.total
+        reward = normalize_step_reward_to_unit(breakdown.total, self._state.config)
         sla_breach = breakdown.sla_breach
 
         # Apply action: mark email processed
@@ -222,7 +225,7 @@ class MyEnvironment(Environment):
 
         # Optional rubric override, if provided externally
         if self.rubric is not None:
-            observation.reward = self._apply_rubric(action, observation)
+            observation.reward = clip01(float(self._apply_rubric(action, observation)))
         return self._apply_transform(observation)
 
     @property
