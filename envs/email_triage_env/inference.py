@@ -22,14 +22,15 @@ except ImportError:
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
-MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "openai/gpt-oss-120b:groq"
+MODEL_NAME = os.getenv("MODEL_NAME") or "openai/gpt-oss-120b:groq"
 HF_TOKEN = os.getenv("HF_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-API_KEY = HF_TOKEN or OPENAI_API_KEY
+API_KEY = HF_TOKEN
 API_BASE_URL = (
-    os.getenv("OPENAI_BASE_URL") or os.getenv("API_BASE_URL") or DEFAULT_LLM_BASE_URL
+    os.getenv("API_BASE_URL") or DEFAULT_LLM_BASE_URL
 )
 BENCHMARK_ENV = os.getenv("BENCHMARK_ENV") or "email_triage_env"
+
+IMAGE_NAME = os.getenv("IMAGE_NAME") or "email_triage_env:latest"
 
 TEMPERATURE = float(os.getenv("TEMPERATURE") or "0.2")
 # JSON + reply body can exceed small limits; truncation yields unclosed strings and parse failure.
@@ -237,7 +238,11 @@ async def run() -> None:
         score = 0.0
         success = False
         try:
-            async with EmailTriageEnv(base_url=ENV_BASE_URL) as env:
+            try:
+                async with EmailTriageEnv(base_url=ENV_BASE_URL) as env:
+                    rewards, step_num, score, success = await _run_one_task(env, task, llm_client)
+            except:
+                env = await EmailTriageEnv.from_docker_image(IMAGE_NAME)
                 rewards, step_num, score, success = await _run_one_task(env, task, llm_client)
         except Exception as ex:
             print(f"inference: env connection/session: {type(ex).__name__}: {ex}", file=sys.stderr)
