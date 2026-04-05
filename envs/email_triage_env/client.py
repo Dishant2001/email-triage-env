@@ -12,7 +12,11 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from models import Email, MyAction, MyObservation, MyState, PublicEmail
+try:
+    from .models import Email, MyAction, MyObservation, MyState, PublicEmail
+except ImportError:
+    # Running as a loose script (e.g. ``from client import …`` with cwd = package root).
+    from models import Email, MyAction, MyObservation, MyState, PublicEmail
 
 
 class EmailTriageEnv(

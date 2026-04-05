@@ -9,9 +9,14 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from client import EmailTriageEnv
-from models import MyAction, MyObservation
-from tasks import TaskSpec, all_tasks
+try:
+    from email_triage_env.client import EmailTriageEnv
+    from email_triage_env.models import MyAction, MyObservation
+    from email_triage_env.tasks import TaskSpec, all_tasks
+except ImportError:
+    from client import EmailTriageEnv
+    from models import MyAction, MyObservation
+    from tasks import TaskSpec, all_tasks
 
 # OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"

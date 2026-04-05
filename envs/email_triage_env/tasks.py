@@ -5,7 +5,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openenv.core.client_types import StepResult
 
-from models import MyAction, MyObservation, MyState, PublicEmail
+try:
+    from .models import MyAction, MyObservation, MyState, PublicEmail
+except ImportError:
+    from models import MyAction, MyObservation, MyState, PublicEmail
 
 
 @dataclass(frozen=True)
