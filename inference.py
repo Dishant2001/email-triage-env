@@ -19,6 +19,9 @@ from envs.my_env.client import MyEnv
 from envs.my_env.models import MyAction, MyObservation
 from envs.my_env.tasks import all_tasks
 
+from dotenv import load_dotenv
+load_dotenv()
+
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL")
