@@ -30,7 +30,7 @@ API_BASE_URL = (
 )
 BENCHMARK_ENV = os.getenv("BENCHMARK_ENV") or "email_triage_env"
 
-IMAGE_NAME = os.getenv("IMAGE_NAME") or "email_triage_env:latest"
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME") or "openenv-email_triage:latest"
 
 TEMPERATURE = float(os.getenv("TEMPERATURE") or "0.2")
 # JSON + reply body can exceed small limits; truncation yields unclosed strings and parse failure.
