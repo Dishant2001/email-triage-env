@@ -53,7 +53,7 @@ That combination is **useful for research and product-facing benchmarks**: RL, p
 | **OpenEnv-native** | `EmailTriageEnv` client + `EmailTriageEnvironment` server; `reset` / `step` / `state`; `POST` + `WS /ws`. |
 | **Fair evaluation** | `PublicEmail` in observations; **`ground_truth_action`** and **keyword rubrics** stay server-side unless you explicitly expose them in state. |
 | **Dense, interpretable signal** | Per-step **normalized reward** in **[0, 1]** plus **`metadata["grade"]`** breakdown (SLA, prioritization, action match, reply rubric, costs). |
-| **Episode benchmarks** | Three **`TaskSpec`** graders in **`tasks.py`** (easy → medium → hard), each scoring **[0, 1]** independently of the mean step reward. |
+| **Episode benchmarks** | Three **`TaskSpec`** graders (**raw** **[0, 1]**); **`harness_task_score`** maps to **(0, 1)** for the OpenEnv harness (`envs/email_triage_env` README). |
 | **LLM runner** | Repo **`inference.py`**: structured **`[START]` / `[STEP]` / `[END]`** logs for leaderboard-style runs. |
 | **Shipping** | `uv` + lockfile, **Dockerfile**, **`openenv push`** path for HF Spaces, web UI at `/web`. |
 
@@ -130,7 +130,7 @@ Multi-factor **deterministic** score: SLA, “did you pick the most urgent pendi
 
 ## Benchmarks
 
-Three tasks, **[0, 1]** scores, **deterministic** under fixed seeds:
+Three tasks; **harness** scores in the **open interval (0, 1)** (see **`harness_task_score`** in the env package), **deterministic** under fixed seeds:
 
 | Task ID | Difficulty | Max steps | What it tests |
 |---------|------------|-----------|----------------|

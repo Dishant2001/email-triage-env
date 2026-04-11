@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Dict, List, Literal, Optional
 
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MyAction(Action):
@@ -108,6 +108,8 @@ def to_public_email(email: PublicEmail) -> PublicEmail:
 class EnvConfig(BaseModel):
     """Reset-time configuration knobs to control difficulty and observability."""
 
+    model_config = ConfigDict(extra="ignore")
+
     top_n: int = Field(default=5, ge=1, description="Number of pending emails shown in observation")
     arrivals_enabled: bool = Field(default=True, description="Whether new emails can arrive over time")
     max_new_emails: int = Field(default=3, ge=0, description="Max number of new emails that can arrive per episode")
@@ -139,21 +141,6 @@ class EnvConfig(BaseModel):
             "0 = fixed legacy starter inbox (reproducible benchmarks). "
             "1–15 = parametric starter (banded complexity); randomness is random.Random(seed) only."
         ),
-    )
-    reward_mode: Literal["legacy", "emergent", "hybrid"] = Field(
-        default="hybrid",
-        description=(
-            "legacy: step reward weights oracle labels heavily. "
-            "emergent: observable SLA/prioritization, structural reply check, consequence_signal "
-            "(no ground-truth action or keyword rubric); normalized via (base+0.6)/1.2. "
-            "hybrid: blend oracle action match via oracle_weight with legacy-style terms."
-        ),
-    )
-    oracle_weight: float = Field(
-        default=0.35,
-        ge=0.0,
-        le=1.0,
-        description="In hybrid mode, weight on ground-truth action match; remainder is emergent-only for that component.",
     )
     thread_followups_enabled: bool = Field(
         default=True,
@@ -242,13 +229,13 @@ class MyReward(BaseModel):
     sla_breach: bool = Field(..., description="Whether SLA was breached for chosen email")
     sla_score: float = Field(..., description="SLA component")
     prioritization_score: float = Field(..., description="Urgency selection component")
-    action_score: float = Field(..., description="Ground-truth action match component")
+    action_score: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
     response_score: float = Field(..., description="Deterministic response rubric component")
-    throughput_score: float = Field(default=0.0, description="Small bonus when SLA not breached this step")
-    breach_load_penalty: float = Field(default=0.0, description="Penalty scaling with prior breaches this episode")
+    throughput_score: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
+    breach_load_penalty: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
     consequence_signal: float = Field(
         default=0.0,
-        description="Emergent-mode consequence term (thread/hidden-queue heuristics); 0 in legacy/hybrid.",
+        description="Consequence term from thread/hidden-queue heuristics in step grading.",
     )
     cost_penalty: float = Field(..., description="Action cost penalty (negative)")
-    idle_penalty: float = Field(..., description="Per-step idle penalty (negative)")
+    idle_penalty: float = Field(default=0.0, description="Reserved; valid steps omit idle in graded sum")

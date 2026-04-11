@@ -207,15 +207,9 @@ class EmailTriageEnvironment(Environment):
             current_time=self._state.current_time,
             config=self._state.config,
             sla_pressure_offset=self._state.sla_pressure_offset,
-            episode_sla_breach_count=self._state.episode_sla_breach_count,
-            reward_mode=self._state.config.reward_mode,
-            oracle_weight=self._state.config.oracle_weight,
             hidden_pending_count=hidden_pending_count,
         )
-        if self._state.config.reward_mode == "emergent":
-            reward = float(breakdown.total)
-        else:
-            reward = normalize_step_reward_to_unit(breakdown.total, self._state.config)
+        reward = float(breakdown.total)
         sla_breach = breakdown.sla_breach
 
         if breakdown.sla_breach:

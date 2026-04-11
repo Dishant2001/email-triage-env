@@ -12,11 +12,11 @@ from openai import OpenAI
 try:
     from email_triage_env.client import EmailTriageEnv
     from email_triage_env.models import MyAction, MyObservation
-    from email_triage_env.tasks import TaskSpec, all_tasks
+    from email_triage_env.tasks import TaskSpec, all_tasks, harness_task_score
 except ImportError:
     from client import EmailTriageEnv
     from models import MyAction, MyObservation
-    from tasks import TaskSpec, all_tasks
+    from tasks import TaskSpec, all_tasks, harness_task_score
 
 # OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
@@ -25,7 +25,7 @@ ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 MODEL_NAME = (
     os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "openai/gpt-oss-120b:groq"
 )
-HF_TOKEN = os.getenv("HF_TOKEN") or "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"
+HF_TOKEN = os.getenv("HF_TOKEN") or "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"
 
 API_KEY = os.getenv("OPENAI_API_KEY") or HF_TOKEN
 API_BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("API_BASE_URL") or DEFAULT_LLM_BASE_URL
@@ -41,9 +41,6 @@ MAX_STEPS = int(os.getenv("MAX_STEPS") or "30")
 BODY_MAX_CHARS = int(os.getenv("INFERENCE_BODY_MAX_CHARS") or "800")
 VERBOSE_STEPS = os.getenv("INFERENCE_VERBOSE_STEPS", "").lower() in ("1", "true", "yes")
 
-# This harness always resets the env with emergent step rewards (not configurable via env vars).
-INFERENCE_REWARD_MODE = "emergent"
-
 
 def _model_display() -> str:
     return str(MODEL_NAME or "unknown").replace(" ", "_")
@@ -51,6 +48,11 @@ def _model_display() -> str:
 
 def _fmt_reward(x: float) -> str:
     return f"{float(x):.2f}"
+
+
+def _fmt_task_score(x: float) -> str:
+    """Task scores are strictly inside (0, 1); avoid two-decimal rounding to 0.00 / 1.00."""
+    return f"{float(x):.6f}"
 
 
 def _fmt_bool(b: bool) -> str:
@@ -79,10 +81,6 @@ def _action_str(action: MyAction) -> str:
     return f"{at}('{eid}')"
 
 
-def _clip01(x: float) -> float:
-    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
-
-
 def _build_client() -> Optional[OpenAI]:
     if not (API_KEY and MODEL_NAME):
         return None
@@ -102,7 +100,6 @@ def _merge_reset_config(base: Dict[str, Any]) -> Dict[str, Any]:
 
     Supported env vars: SCENARIO_PROFILE, SEED, ENTANGLEMENT_ENABLED,
     THREAD_FOLLOWUPS_ENABLED, ESCALATION_ECHO_ENABLED, ARRIVALS_ENABLED, MAX_NEW_EMAILS, TOP_N.
-    (``reward_mode`` is always ``emergent`` for this script; see INFERENCE_REWARD_MODE.)
     """
     out: Dict[str, Any] = dict(base)
     sp = os.getenv("SCENARIO_PROFILE")
@@ -283,7 +280,6 @@ async def _run_one_task(
 
     try:
         reset_cfg = _merge_reset_config(task.reset_config)
-        reset_cfg["reward_mode"] = INFERENCE_REWARD_MODE
 
         result = await env.reset(config=reset_cfg)
         obs = result.observation
@@ -312,11 +308,12 @@ async def _run_one_task(
             )
 
         final_state = await env.state()
-        score = _clip01(float(task.grader(trajectory, final_state, observation_chain)))
-        success = score >= 1.0 - 1e-9
+        raw = float(task.grader(trajectory, final_state, observation_chain))
+        score = harness_task_score(raw)
+        success = 0.0 < score < 1.0
     except Exception as ex:
         print(f"inference: task={task.task_id} {type(ex).__name__}: {ex}", file=sys.stderr)
-        score = 0.0
+        score = harness_task_score(0.0)
         success = False
 
     return rewards, step_num, score, success
@@ -326,7 +323,7 @@ def _print_end(rewards: List[float], step_num: int, score: float, success: bool)
     rewards_csv = ",".join(_fmt_reward(x) for x in rewards)
     print(
         f"[END]   success={_fmt_bool(success)} steps={step_num} "
-        f"score={_fmt_reward(score)} rewards={rewards_csv}",
+        f"score={_fmt_task_score(score)} rewards={rewards_csv}",
         flush=True,
     )
 
@@ -371,7 +368,7 @@ async def run() -> None:
                                 await maybe
         except Exception as ex:
             print(f"inference: env connection/session: {type(ex).__name__}: {ex}", file=sys.stderr)
-            rewards, step_num, score, success = [], 0, 0.0, False
+            rewards, step_num, score, success = [], 0, harness_task_score(0.0), False
         finally:
             _print_end(rewards, step_num, score, success)
 

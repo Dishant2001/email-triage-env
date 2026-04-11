@@ -8,7 +8,12 @@
 
 from .client import EmailTriageEnv
 from .models import Email, MyAction, MyObservation, MyReward, PublicEmail, to_public_email
-from .tasks import TaskSpec, all_tasks
+from .tasks import (
+    TASK_SCORE_HARNESS_MARGIN,
+    TaskSpec,
+    all_tasks,
+    harness_task_score,
+)
 from .training_utils import (
     ACTION_KINDS,
     flat_discrete_dimensions,
@@ -18,6 +23,7 @@ from .training_utils import (
 
 __all__ = [
     "ACTION_KINDS",
+    "TASK_SCORE_HARNESS_MARGIN",
     "Email",
     "MyAction",
     "MyObservation",
@@ -26,6 +32,7 @@ __all__ = [
     "EmailTriageEnv",
     "TaskSpec",
     "all_tasks",
+    "harness_task_score",
     "flat_discrete_dimensions",
     "flat_index_to_slots",
     "slot_action_to_my_action",
