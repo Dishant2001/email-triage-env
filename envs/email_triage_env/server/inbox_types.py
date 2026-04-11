@@ -39,6 +39,7 @@ def make_email(
     thread_id: str,
     ground_truth_action: Literal["reply", "escalate", "archive"],
     required_response_keywords: List[str],
+    sender: str = "support@acme.com",
 ) -> Email:
     return Email(
         email_id=email_id,
@@ -51,5 +52,6 @@ def make_email(
         sla_limit=sla_limit,
         ground_truth_action=ground_truth_action,
         required_response_keywords=list(required_response_keywords),
+        sender=sender,
     )
 

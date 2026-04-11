@@ -27,13 +27,17 @@ def urgency_score(email: Email, current_time: int) -> float:
     # Higher is more urgent.
     remaining = remaining_sla(email, current_time)
     urgency = 1.0 / max(1, remaining + 1)
-    priority_weight = {EmailPriority.high: 1.0, EmailPriority.medium: 0.6, EmailPriority.low: 0.2}[  # noqa: E501
-        email.priority
-    ]
+    priority_weight = {
+        EmailPriority.critical: 1.2,
+        EmailPriority.high: 1.0,
+        EmailPriority.medium: 0.6,
+        EmailPriority.low: 0.2,
+    }[email.priority]
     tier_weight = {CustomerTier.vip: 1.0, CustomerTier.premium: 0.6, CustomerTier.standard: 0.2}[  # noqa: E501
         email.customer_tier
     ]
-    return 0.55 * priority_weight + 0.25 * tier_weight + 0.20 * urgency
+    base = 0.55 * priority_weight + 0.25 * tier_weight + 0.20 * urgency
+    return base + float(getattr(email, "urgency_adjustment", 0.0))
 
 
 def select_top_n_pending(emails: Iterable[Email], current_time: int, top_n: int) -> List[Email]:

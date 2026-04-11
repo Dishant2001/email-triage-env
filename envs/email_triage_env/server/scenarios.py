@@ -1,13 +1,41 @@
 from __future__ import annotations
 
 import random
-from typing import Any, Dict, List
+from collections import Counter
+from typing import List, Literal
 
 try:
     from ..models import CustomerTier, Email, EmailPriority
 except ImportError:  # pragma: no cover
     from models import CustomerTier, Email, EmailPriority
 from .inbox_types import ArrivalTemplate, make_email
+
+DOMAIN_KEYWORDS: List[str] = [
+    "ticket",
+    "resolved",
+    "ETA",
+    "escalated",
+    "team",
+    "investigating",
+    "update",
+    "acknowledged",
+    "priority",
+    "deadline",
+    "follow-up",
+    "reviewed",
+    "confirmed",
+    "assigned",
+    "closed",
+]
+
+SENDER_POOL: List[str] = [
+    "support@acme.com",
+    "billing@globex.com",
+    "ops@initech.net",
+    "ceo@umbrella.org",
+    "noreply@hooli.io",
+    "admin@piedpiper.com",
+]
 
 
 def starter_inbox() -> List[Email]:
@@ -23,6 +51,7 @@ def starter_inbox() -> List[Email]:
             sla_limit=5,
             ground_truth_action="escalate",
             required_response_keywords=["eta", "investigat", "sorry"],
+            sender="billing@globex.com",
         ),
         make_email(
             email_id="2",
@@ -35,6 +64,7 @@ def starter_inbox() -> List[Email]:
             sla_limit=20,
             ground_truth_action="archive",
             required_response_keywords=[],
+            sender="noreply@hooli.io",
         ),
         make_email(
             email_id="3",
@@ -47,6 +77,7 @@ def starter_inbox() -> List[Email]:
             sla_limit=10,
             ground_truth_action="reply",
             required_response_keywords=["refund", "photos", "timeline"],
+            sender="support@acme.com",
         ),
         make_email(
             email_id="4",
@@ -59,165 +90,183 @@ def starter_inbox() -> List[Email]:
             sla_limit=6,
             ground_truth_action="escalate",
             required_response_keywords=[],
+            sender="ceo@umbrella.org",
         ),
     ]
 
 
-def _procedural_blueprints() -> List[Dict[str, Any]]:
-    """Parameterised starter archetypes (composition varies by profile + seed)."""
-    return [
-        {
-            "thread_id": "t1",
-            "subject": "Urgent client issue: checkout failing",
-            "body": "Payments failing for multiple users. Need immediate investigation and ETA.",
-            "priority": EmailPriority.high,
-            "customer_tier": CustomerTier.premium,
-            "base_sla": 5,
-            "ground_truth_action": "escalate",
-            "required_response_keywords": ["eta", "investigat", "sorry"],
-        },
-        {
-            "thread_id": "t2",
-            "subject": "FYI: meeting notes from yesterday",
-            "body": "Sharing notes. No action required; archive if reviewed.",
-            "priority": EmailPriority.low,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 20,
-            "ground_truth_action": "archive",
-            "required_response_keywords": [],
-        },
-        {
-            "thread_id": "t3",
-            "subject": "Refund request - order #1842",
-            "body": "Requesting refund due to damaged item. Ask for photos and confirm timeline.",
-            "priority": EmailPriority.medium,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 10,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["refund", "photos", "timeline"],
-        },
-        {
-            "thread_id": "t4",
-            "subject": "VIP escalation: outage reported",
-            "body": "VIP account reports outage. Please escalate to on-call immediately.",
-            "priority": EmailPriority.high,
-            "customer_tier": CustomerTier.vip,
-            "base_sla": 6,
-            "ground_truth_action": "escalate",
-            "required_response_keywords": [],
-        },
-        {
-            "thread_id": "t5",
-            "subject": "Password reset not working",
-            "body": "User cannot reset password. Please advise next steps.",
-            "priority": EmailPriority.medium,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 12,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["reset", "link"],
-        },
-        {
-            "thread_id": "t6",
-            "subject": "Billing: charged twice for same subscription",
-            "body": "I see two identical charges on my card. Please investigate and confirm a refund timeline.",
-            "priority": EmailPriority.high,
-            "customer_tier": CustomerTier.premium,
-            "base_sla": 8,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["refund", "charge", "investigat"],
-        },
-        {
-            "thread_id": "t7",
-            "subject": "Shipment delayed—need updated delivery date",
-            "body": "Order #7721 was supposed to arrive last week. Provide revised ETA and tracking.",
-            "priority": EmailPriority.medium,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 14,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["tracking", "eta", "order"],
-        },
-        {
-            "thread_id": "t8",
-            "subject": "Newsletter subscription confirmation",
-            "body": "Customer asks if subscribed; low urgency.",
-            "priority": EmailPriority.low,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 25,
-            "ground_truth_action": "archive",
-            "required_response_keywords": [],
-        },
-        {
-            "thread_id": "t9",
-            "subject": "Security: suspicious login alert",
-            "body": "Alert about login from another country—not authorized. What should I do?",
-            "priority": EmailPriority.high,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 6,
-            "ground_truth_action": "escalate",
-            "required_response_keywords": [],
-        },
-        {
-            "thread_id": "t10",
-            "subject": "Integration partner: webhook failures",
-            "body": "Integration failing with 500s after deploy. Need engineering and status update.",
-            "priority": EmailPriority.high,
-            "customer_tier": CustomerTier.premium,
-            "base_sla": 5,
-            "ground_truth_action": "escalate",
-            "required_response_keywords": [],
-        },
-        {
-            "thread_id": "t11",
-            "subject": "Cannot access admin dashboard after role change",
-            "body": "Admin role updated but permission denied on dashboard. Please fix.",
-            "priority": EmailPriority.medium,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 12,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["permission", "access", "role"],
-        },
-        {
-            "thread_id": "t12",
-            "subject": "Tax form W-9 request for contractor payout",
-            "body": "Finance needs W-9 before January payout. What is the secure upload link?",
-            "priority": EmailPriority.medium,
-            "customer_tier": CustomerTier.standard,
-            "base_sla": 16,
-            "ground_truth_action": "reply",
-            "required_response_keywords": ["w-9", "upload", "secure"],
-        },
-    ]
+def _assign_thread_ids(
+    rng: random.Random, n: int, profile: int
+) -> List[str]:
+    """Return one thread id per email index; clusters only for medium/high bands."""
+    if 1 <= profile <= 5:
+        return [f"thread-{i}" for i in range(n)]
+
+    num_clusters = 1
+    if 6 <= profile <= 10:
+        num_clusters = rng.randint(1, 2)
+    else:
+        num_clusters = rng.randint(2, 3)
+
+    idx = list(range(n))
+    rng.shuffle(idx)
+    tids = [f"thread-{i}" for i in range(n)]
+    ptr = 0
+    c_id = 0
+    while ptr < n - 1 and num_clusters > 0:
+        size = min(rng.randint(2, 3), n - ptr)
+        if size < 2:
+            ptr += 1
+            continue
+        label = f"tcl{c_id}-{rng.randint(0, 9999)}"
+        c_id += 1
+        for k in range(size):
+            tids[idx[ptr + k]] = label
+        ptr += size
+        num_clusters -= 1
+    return tids
+
+
+def _sample_priorities(rng: random.Random, n: int, profile: int) -> List[EmailPriority]:
+    if 1 <= profile <= 5:
+        level_count = rng.randint(1, 2)
+        pool = rng.sample([EmailPriority.low, EmailPriority.medium], k=level_count)
+        return [rng.choice(pool) for _ in range(n)]
+
+    if 6 <= profile <= 10:
+        pool = [EmailPriority.low, EmailPriority.medium, EmailPriority.high]
+        prios = [rng.choice(pool) for _ in range(n)]
+        return prios
+
+    weights = [0.12, 0.28, 0.60]
+    levels = [EmailPriority.medium, EmailPriority.high, EmailPriority.critical]
+    return [rng.choices(levels, weights=weights, k=1)[0] for _ in range(n)]
+
+
+def _sample_sla(rng: random.Random, priority: EmailPriority, profile: int) -> int:
+    if 1 <= profile <= 5:
+        return rng.randint(30, 60)
+
+    if 6 <= profile <= 10:
+        if rng.random() < 0.42:
+            return rng.randint(5, 14)
+        return rng.randint(12, 40)
+
+    return rng.randint(5, 20)
+
+
+def _sample_ground_truth(
+    rng: random.Random, priority: EmailPriority
+) -> Literal["reply", "escalate", "archive"]:
+    r = rng.random()
+    if r < 0.5:
+        return "reply"
+    if r < 0.75:
+        return "escalate"
+    if priority in (EmailPriority.high, EmailPriority.critical):
+        return "reply" if rng.random() < 0.5 else "escalate"
+    return "archive"
+
+
+def _reply_keywords(rng: random.Random, ground_truth: str) -> List[str]:
+    if ground_truth != "reply":
+        return []
+    k = rng.randint(2, min(4, len(DOMAIN_KEYWORDS)))
+    return rng.sample(DOMAIN_KEYWORDS, k)
+
+
+def _assign_senders(rng: random.Random, n: int, profile: int) -> List[str]:
+    ns = rng.randint(3, min(6, len(SENDER_POOL)))
+    pool = rng.sample(SENDER_POOL, k=ns)
+
+    if 11 <= profile <= 15:
+        weights = [rng.random() + 0.5 for _ in pool]
+        return [rng.choices(pool, weights=weights, k=1)[0] for _ in range(n)]
+
+    return [rng.choice(pool) for _ in range(n)]
+
+
+def _enforce_medium_tight_sla(
+    rng: random.Random, slas: List[int], priorities: List[EmailPriority], profile: int
+) -> None:
+    if not (6 <= profile <= 10):
+        return
+    if any(s < 15 for s in slas):
+        return
+    i = rng.randrange(len(slas))
+    slas[i] = rng.randint(5, 14)
+
+
+def _enforce_high_sender_repeat(senders: List[str], profile: int, rng: random.Random) -> None:
+    """Ensure at least two distinct senders each appear on 2+ emails (high band)."""
+    if not (11 <= profile <= 15) or len(senders) < 4:
+        return
+    counts = Counter(senders)
+    if sum(1 for c in counts.values() if c >= 2) >= 2:
+        return
+    idx = list(range(len(senders)))
+    rng.shuffle(idx)
+    a, b = rng.sample(SENDER_POOL, k=2)
+    senders[idx[0]] = a
+    senders[idx[1]] = a
+    senders[idx[2]] = b
+    senders[idx[3]] = b
 
 
 def generate_starter_inbox(*, seed: int, profile: int) -> List[Email]:
     """
-    Procedural starter: pick 4–6 blueprints, jitter SLA/created_time from seed+profile.
+    Parametric starter inbox. ``profile == 0`` returns the fixed legacy fixture.
 
-    profile 0 should not call this—use ``starter_inbox()`` for the fixed benchmark fixture.
+    Profiles 1–5: low complexity; 6–10: medium (clusters, mixed SLAs);
+    11–15: high (critical-heavy, tight SLAs, sender repetition for entanglement).
+
+    Randomness uses ``random.Random(seed)`` only so the result is independent of
+    any other RNG in the process.
     """
-    rng = random.Random(int(seed) * 100_003 + int(profile) * 9_176)
-    blueprints = _procedural_blueprints()
-    n = 4 + (profile % 3)  # 4, 5, or 6
-    indices = list(range(len(blueprints)))
-    rng.shuffle(indices)
-    pick = sorted(indices[:n], key=lambda i: i)  # stable id ordering by blueprint index
+    if profile == 0:
+        return starter_inbox()
+
+    rng = random.Random(int(seed))
+    if 1 <= profile <= 5:
+        n = rng.randint(4, 6)
+    elif 6 <= profile <= 10:
+        n = rng.randint(7, 10)
+    else:
+        n = rng.randint(10, 14)
+
+    thread_ids = _assign_thread_ids(rng, n, profile)
+    priorities = _sample_priorities(rng, n, profile)
+    slas = [_sample_sla(rng, priorities[i], profile) for i in range(n)]
+    _enforce_medium_tight_sla(rng, slas, priorities, profile)
+    senders = _assign_senders(rng, n, profile)
+    _enforce_high_sender_repeat(senders, profile, rng)
+
+    tiers = list(CustomerTier)
     emails: List[Email] = []
-    for seq, bi in enumerate(pick):
-        bp = blueprints[bi]
-        sla = max(4, min(28, int(bp["base_sla"]) + rng.randint(-2, 3)))
+    for i in range(n):
+        prio = priorities[i]
+        sla = max(1, slas[i])
+        gt = _sample_ground_truth(rng, prio)
+        kw = _reply_keywords(rng, gt)
         created = rng.randint(0, min(3, max(0, sla // 4)))
+        subj = f"Inbox item {i + 1} (ref {rng.randint(10000, 99999)})"
+        body = (
+            f"Message from {senders[i]} regarding thread {thread_ids[i]}. "
+            f"Please triage with SLA window {sla}."
+        )
         emails.append(
             make_email(
-                email_id=str(seq + 1),
-                thread_id=str(bp["thread_id"]),
-                subject=str(bp["subject"]),
-                body=str(bp["body"]),
-                priority=bp["priority"],
-                customer_tier=bp["customer_tier"],
+                email_id=str(i + 1),
+                thread_id=thread_ids[i],
+                subject=subj[:120],
+                body=body[:500],
+                priority=prio,
+                customer_tier=rng.choice(tiers),
                 created_time=created,
                 sla_limit=sla,
-                ground_truth_action=bp["ground_truth_action"],
-                required_response_keywords=list(bp["required_response_keywords"]),
+                ground_truth_action=gt,
+                required_response_keywords=kw,
+                sender=senders[i],
             )
         )
     return emails

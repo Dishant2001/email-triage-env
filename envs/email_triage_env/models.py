@@ -38,6 +38,7 @@ class EmailPriority(str, Enum):
     low = "low"
     medium = "medium"
     high = "high"
+    critical = "critical"
 
 
 class EmailStatus(str, Enum):
@@ -83,6 +84,18 @@ class Email(PublicEmail):
         default_factory=list,
         description="Keywords for reply scoring; omitted from agent observations.",
     )
+    sender: str = Field(
+        default="support@acme.com",
+        description="Server-only sender id for entanglement; omitted from PublicEmail observations.",
+    )
+    thread_context_updated: bool = Field(
+        default=False,
+        description="Server-only: set when thread reply de-escalation adjusted sibling pending mail.",
+    )
+    urgency_adjustment: float = Field(
+        default=0.0,
+        description="Server-only offset added in dynamics.urgency_score (e.g. thread de-escalation).",
+    )
 
 
 def to_public_email(email: PublicEmail) -> PublicEmail:
@@ -124,15 +137,16 @@ class EnvConfig(BaseModel):
         le=15,
         description=(
             "0 = fixed legacy starter inbox (reproducible benchmarks). "
-            "1–15 = procedural inbox variants (composition / SLA mix) from the same seed."
+            "1–15 = parametric starter (banded complexity); randomness is random.Random(seed) only."
         ),
     )
     reward_mode: Literal["legacy", "emergent", "hybrid"] = Field(
         default="hybrid",
         description=(
             "legacy: step reward weights oracle labels heavily. "
-            "emergent: SLA, prioritization, throughput, breach load—minimal oracle. "
-            "hybrid: blend (see oracle_weight)."
+            "emergent: observable SLA/prioritization, structural reply check, consequence_signal "
+            "(no ground-truth action or keyword rubric); normalized via (base+0.6)/1.2. "
+            "hybrid: blend oracle action match via oracle_weight with legacy-style terms."
         ),
     )
     oracle_weight: float = Field(
@@ -151,7 +165,11 @@ class EnvConfig(BaseModel):
     )
     entanglement_enabled: bool = Field(
         default=True,
-        description="Bad archive (vs hidden label) increases SLA pressure on remaining pending mail.",
+        description=(
+            "When True, apply in-place state entanglement: reply de-escalates same-thread pending, "
+            "escalate tightens SLA for same-sender pending, bad archive tightens hidden pending SLAs "
+            "and increases sla_pressure_offset."
+        ),
     )
     bad_archive_pressure_delta: int = Field(
         default=1,
@@ -228,5 +246,9 @@ class MyReward(BaseModel):
     response_score: float = Field(..., description="Deterministic response rubric component")
     throughput_score: float = Field(default=0.0, description="Small bonus when SLA not breached this step")
     breach_load_penalty: float = Field(default=0.0, description="Penalty scaling with prior breaches this episode")
+    consequence_signal: float = Field(
+        default=0.0,
+        description="Emergent-mode consequence term (thread/hidden-queue heuristics); 0 in legacy/hybrid.",
+    )
     cost_penalty: float = Field(..., description="Action cost penalty (negative)")
     idle_penalty: float = Field(..., description="Per-step idle penalty (negative)")

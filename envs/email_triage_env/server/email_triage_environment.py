@@ -28,7 +28,12 @@ except ImportError:
     from models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState, to_public_email
 
 try:
-    from .consequences import maybe_escalation_echo, maybe_reply_followup, thread_key
+    from .consequences import (
+        apply_entanglement_state_mutations,
+        maybe_escalation_echo,
+        maybe_reply_followup,
+        thread_key,
+    )
     from .dynamics import (
         apply_action_dynamics,
         maybe_generate_arrivals,
@@ -38,7 +43,12 @@ try:
     from .grader import clip01, grade_step, normalize_step_reward_to_unit
     from .scenarios import arrival_templates, generate_starter_inbox, starter_inbox
 except ImportError:  # pragma: no cover
-    from server.consequences import maybe_escalation_echo, maybe_reply_followup, thread_key
+    from server.consequences import (
+        apply_entanglement_state_mutations,
+        maybe_escalation_echo,
+        maybe_reply_followup,
+        thread_key,
+    )
     from server.dynamics import (
         apply_action_dynamics,
         maybe_generate_arrivals,
@@ -184,6 +194,12 @@ class EmailTriageEnvironment(Environment):
             return self._apply_transform(observation)
 
         dyn = apply_action_dynamics(action_type=action.action_type, config=self._state.config)
+        visible_pre = select_top_n_pending(
+            self._state.emails,
+            self._state.current_time,
+            top_n=int(self._state.config.top_n),
+        )
+        hidden_pending_count = max(0, len(pending_before) - len(visible_pre))
         breakdown = grade_step(
             action=action,
             chosen_email=chosen,
@@ -194,8 +210,12 @@ class EmailTriageEnvironment(Environment):
             episode_sla_breach_count=self._state.episode_sla_breach_count,
             reward_mode=self._state.config.reward_mode,
             oracle_weight=self._state.config.oracle_weight,
+            hidden_pending_count=hidden_pending_count,
         )
-        reward = normalize_step_reward_to_unit(breakdown.total, self._state.config)
+        if self._state.config.reward_mode == "emergent":
+            reward = float(breakdown.total)
+        else:
+            reward = normalize_step_reward_to_unit(breakdown.total, self._state.config)
         sla_breach = breakdown.sla_breach
 
         if breakdown.sla_breach:
@@ -212,6 +232,16 @@ class EmailTriageEnvironment(Environment):
             and chosen.ground_truth_action != "archive"
         ):
             self._state.sla_pressure_offset += int(self._state.config.bad_archive_pressure_delta)
+
+        apply_entanglement_state_mutations(
+            emails=self._state.emails,
+            pending_before=pending_before,
+            chosen=chosen,
+            action=action,
+            current_time=self._state.current_time,
+            top_n=int(self._state.config.top_n),
+            config=self._state.config,
+        )
 
         # Apply action: mark email processed
         for e in self._state.emails:
