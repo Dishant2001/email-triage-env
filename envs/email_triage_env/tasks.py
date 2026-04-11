@@ -14,19 +14,7 @@ except ImportError:
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """
-    A concrete objective for an agent.
-
-    Each task defines:
-    - reset-time config (seed, top_n, arrivals settings)
-    - a deterministic task-level ``grader`` returning **raw** merit in **[0, 1]** (endpoints
-      allowed on the raw sum). Harnesses call ``harness_task_score(raw)`` so reported values
-      lie strictly in **(0, 1)** per the OpenEnv contract.
-
-    Graders receive ``observation_chain``: ``[obs_0, obs_1, ...]`` where ``obs_0`` is the
-    initial observation and ``obs_{i+1}`` is the observation **after** step *i* (it carries
-    ``metadata`` for that step: ``grade``, ``new_emails``, errors).
-    """
+    """Episode benchmark: ``reset_config``, ``max_steps``, and ``grader`` (raw score in [0, 1])."""
 
     task_id: str
     difficulty: str  # "easy" | "medium" | "hard"
@@ -39,25 +27,11 @@ class TaskSpec:
     ]
 
 
-# OpenEnv / leaderboard harness: episode scores must satisfy 0 < score < 1 (strict).
-# Raw task graders use intuitive [0, 1] sums; this margin defines the affine map at the boundary only.
 TASK_SCORE_HARNESS_MARGIN: float = 1e-3
 
 
 def harness_task_score(raw: float) -> float:
-    """
-    Map **raw** episode merit (from ``TaskSpec.grader``, typically in ``[0, 1]``) to a
-    **harness** score strictly in ``(0, 1)``.
-
-    **Rubric is unchanged:** graders still compute the same weighted observable signals.
-    This is a **deterministic affine** transport for specs that forbid endpoints:
-
-    Let ``m = TASK_SCORE_HARNESS_MARGIN``, ``x = clamp(raw, 0, 1)`` (non-finite ``raw`` → ``0``).
-    Return ``y = m + (1 - 2m) * x``, then clamp to ``[m, 1 - m]`` for FP safety.
-
-    So ``raw = 0 → y ≈ m``, ``raw = 1 → y ≈ 1 - m``; ordering and linear spacing of raw merit
-    are preserved (no sigmoid or ad-hoc squashing).
-    """
+    """Affine map: raw grader score in [0, 1] -> (margin, 1-margin) for strict open-interval harnesses."""
     m = TASK_SCORE_HARNESS_MARGIN
     x = float(raw)
     if not math.isfinite(x):
@@ -67,7 +41,6 @@ def harness_task_score(raw: float) -> float:
     return min(1.0 - m, max(m, out))
 
 
-# Backward-compatible name used in older snippets / imports.
 _to_open_interval = harness_task_score
 
 
@@ -88,13 +61,7 @@ def _arrival_responsiveness(
     observation_chain: List[MyObservation],
     trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
 ) -> float:
-    """
-    For each email that appeared in metadata["new_emails"] at step S,
-    find the step at which that email_id was handled (appears as the
-    action's email_id in trajectory[S:]).
-    score = max(0, 1 - mean_latency / 10)
-    If no arrivals: return 1.0
-    """
+    """Mean latency from arrival (metadata new_emails) to handling; maps to [0, 1]."""
     arrivals: Dict[str, int] = {}
     for step_idx, obs in enumerate(observation_chain[1:], start=1):
         new = (obs.metadata or {}).get("new_emails") or []
@@ -164,7 +131,7 @@ def task_easy_single_urgent_first() -> TaskSpec:
 
 
 def task_medium_sla_safe_throughput() -> TaskSpec:
-    """Medium: SLA breach rate, throughput, reply structure (observable)."""
+    """Medium benchmark task."""
 
     def grader(
         trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
@@ -188,7 +155,6 @@ def task_medium_sla_safe_throughput() -> TaskSpec:
             score += max(0.0, 0.4 * (1.0 - (breach_rate - 0.2) / 0.8))
 
         initial_inbox_size = len(observation_chain[0].inbox)
-        # Stable denominator: this task fixes arrivals off; ignore injected ids if misconfigured.
         if getattr(final_state.config, "arrivals_enabled", False):
             new_email_count = sum(
                 len((obs.metadata or {}).get("new_emails") or []) for obs in observation_chain[1:]
@@ -216,7 +182,6 @@ def task_medium_sla_safe_throughput() -> TaskSpec:
         task_id="medium_sla_safe_throughput",
         difficulty="medium",
         description="Clear the inbox with low SLA breach rate, throughput, and structured replies.",
-        # Arrivals off so throughput denominator = initial visible size only (predictable grading).
         reset_config={
             "top_n": 3,
             "seed": 1,
@@ -229,7 +194,7 @@ def task_medium_sla_safe_throughput() -> TaskSpec:
 
 
 def task_hard_dynamic_arrivals_backlog() -> TaskSpec:
-    """Hard: arrivals, SLA, hidden backlog pressure, mean consequence signal."""
+    """Hard benchmark task."""
 
     def grader(
         trajectory: List[Tuple[MyObservation, Optional[MyAction]]],
@@ -300,14 +265,6 @@ async def rollout_task(
     task: TaskSpec,
     policy: Callable[[MyObservation], Optional[MyAction]],
 ) -> Tuple[float, List[Tuple[MyObservation, Optional[MyAction]]], MyState, List[MyObservation]]:
-    """
-    Run one episode for a task using a policy.
-
-    Returns:
-        task_score, trajectory[(observation_before_action, action)], final_state,
-        observation_chain (initial obs, then one obs per step after each action).
-    """
-
     result: StepResult[MyObservation] = await env.reset(config=task.reset_config)
     obs = result.observation
     observation_chain: List[MyObservation] = [obs]

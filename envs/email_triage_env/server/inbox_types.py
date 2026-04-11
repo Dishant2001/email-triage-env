@@ -11,11 +11,7 @@ except ImportError:  # pragma: no cover
 
 @dataclass(frozen=True)
 class ArrivalTemplate:
-    """Template for stochastic email arrivals.
-
-    We keep this separate from the Pydantic models to avoid binding environment
-    logic directly to validation concerns.
-    """
+    """Fields for templated arrival emails (dataclass, not Pydantic)."""
 
     subject: str
     body: str

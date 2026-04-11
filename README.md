@@ -52,12 +52,12 @@ That combination is **useful for research and product-facing benchmarks**: RL, p
 |------------|--------|
 | **OpenEnv-native** | `EmailTriageEnv` client + `EmailTriageEnvironment` server; `reset` / `step` / `state`; `POST` + `WS /ws`. |
 | **Fair evaluation** | `PublicEmail` in observations; **`ground_truth_action`** and **keyword rubrics** stay server-side unless you explicitly expose them in state. |
-| **Dense, interpretable signal** | Per-step **normalized reward** in **[0, 1]** plus **`metadata["grade"]`** breakdown (SLA, prioritization, action match, reply rubric, costs). |
-| **Episode benchmarks** | Three **`TaskSpec`** graders (**raw** **[0, 1]**); **`harness_task_score`** maps to **(0, 1)** for the OpenEnv harness (`envs/email_triage_env` README). |
+| **Dense, interpretable signal** | Per-step **`reward`** in **[0, 1]** plus **`metadata["grade"]`**. This build uses **emergent** only: **`(base + 0.6) / 1.2`** (clipped), **no** oracle action term, plus **`consequence_signal`** (see [Per-step reward](#per-step-reward-summary)). |
+| **Episode benchmarks** | Three **`TaskSpec`** graders return **raw** merit in **[0, 1]**; **`harness_task_score`** maps that to **(0, 1)** for the OpenEnv harness (see [Task score vs mean step reward](#task-score-vs-mean-step-reward)). |
 | **LLM runner** | Repo **`inference.py`**: structured **`[START]` / `[STEP]` / `[END]`** logs for leaderboard-style runs. |
 | **Shipping** | `uv` + lockfile, **Dockerfile**, **`openenv push`** path for HF Spaces, web UI at `/web`. |
 
-**Honest scope:** `thread_id` is carried for future thread logic but **does not** yet drive dynamics or grading. The keyword rubric is **deterministic substring coverage** (plus a length fallback)—good for stable benchmarks, not a substitute for human judgment.
+**Threads, entanglement, and extra mail:** `thread_id` groups mail; **`thread_reply_excerpt`** surfaces your last reply in that thread on visible rows. When **`entanglement_enabled`** is on, the server **mutates existing pending rows in place** (no new emails): a **reply** lowers urgency for other pending mail in the same thread; an **escalate** tightens **`sla_limit`** for other pending mail from the **same sender**; a **wrong archive** (action archive but label ≠ archive) bumps **`sla_pressure_offset`** for grading **and** tightens **`sla_limit`** on the two most urgent **hidden** pending items. Separately, **stochastic follow-ups** (after reply) and **internal echo** mail (after escalate) may **append** new rows. Step rewards use **emergent** scoring only (**length + punctuation** for replies, no keyword/oracle rubric). None of this replaces human judgment for production rubrics.
 
 ---
 
@@ -87,18 +87,19 @@ flowchart LR
 | **`EmailTriageEnv`** (`client.py`) | Serializes `MyAction`, parses `StepResult[MyObservation]`, one WebSocket session per server env instance. |
 | **`server/app.py`** | `create_app(EmailTriageEnvironment, …)` → `POST /reset`, `POST /step`, `GET /state`, `GET /schema`, `WS /ws`. |
 | **`EmailTriageEnvironment`** | RNG, full inbox, virtual time, config; `reset` / `step`. |
-| **`scenarios.py`** | `starter_inbox()`, `arrival_templates()`. |
-| **`dynamics.py`** | Urgency ranking, top‑N slice, time advance, optional arrivals. |
-| **`grader.py`** | `grade_step` → breakdown + normalized **`reward`**. |
-| **`tasks.py`** | Episode-level **`TaskSpec.grader`** (harness), separate from per-step reward. |
+| **`scenarios.py`** | `starter_inbox()` for profile **0**; **`generate_starter_inbox(seed, profile)`** for **1–15** — **parametric** bands (low / medium / high complexity) with **`random.Random(seed)`** only so results are independent of the env RNG. `arrival_templates()`. |
+| **`consequences.py`** | **`apply_entanglement_state_mutations`** (in-place pending updates when **`entanglement_enabled`**); optional **follow-ups** after **reply** and **echo** mail after **escalate** (env RNG). |
+| **`dynamics.py`** | Urgency ranking (**`low` / `medium` / `high` / `critical`**, plus per-email **`urgency_adjustment`**), top‑N slice, time advance, optional arrivals (biased after **reply/escalate** in-thread). |
+| **`grader.py`** | `grade_step` → **`GradeBreakdown`**. Step **`reward`** is the graded **`total`**; invalid steps use **`normalize_step_reward_to_unit`** on a fixed penalty. |
+| **`tasks.py`** | Episode **`TaskSpec.grader`** (raw **[0, 1]**); **`rollout_task`** applies **`harness_task_score`**, separate from per-step reward. |
 
 State changes only through **`reset`** and **`step`**. **`state()`** is for inspection; by default grader labels are stripped so RL runs don’t see the answer key—set **`expose_grader_labels_in_state: true`** in **`EnvConfig`** when you need full rows.
 
 ### Episode lifecycle
 
-**Reset:** Load **`EnvConfig`** (e.g. `top_n`, `seed`, arrivals budget), optionally seed RNG, deep-copy **`starter_inbox()`**, set **`current_time = 0`**, return top‑N pending by urgency plus **`hidden_pending_count`**.
+**Reset:** Load **`EnvConfig`**, seed the environment RNG when **`seed`** is set. **`scenario_profile == 0`** → deep copy of fixed **`starter_inbox()`** (benchmark default). **`1–15`** → **`generate_starter_inbox(seed, profile)`**: **parametric** inbox (count, priorities including **`critical`** in the high band, SLAs, thread clusters, senders from a fixed pool, weighted ground truth, sampled keywords for replies)—all driven only by **`random.Random(int(seed))`**, not by other RNG calls. Reset **`thread_replies`**, **`sla_pressure_offset`**, breach counter, and fresh emails (no carry-over mutations). Return top‑N pending by urgency plus **`hidden_pending_count`**.
 
-**Valid step:** Grade at **current** time (before advance), mark email processed, advance clock by **action duration**, maybe inject **one** templated arrival, return new top‑N and **`metadata.grade`** / **`metadata.new_emails`**.
+**Valid step:** Grade at **current** time (before advance) using effective SLA for the chosen row (**`sla_limit`** minus **`sla_pressure_offset`**). Update breach counter, thread-reply cache, and (on wrong archive) **`sla_pressure_offset`** when entanglement is on. Run **`apply_entanglement_state_mutations`** on the live inbox (reply / escalate / wrong-archive branches). **Then** mark the chosen email processed, advance the clock, append optional **follow-up / echo** messages, run **templated arrivals**, and return the new top‑N plus **`metadata.grade`** (includes **`consequence_signal`**), **`metadata.new_emails`**, **`episode_stats`**.
 
 **Invalid step** (bad or stale `email_id`): Time still moves; strong negative reward; **`metadata.error`** = `invalid_email_id_or_not_pending`.
 
@@ -108,38 +109,33 @@ State changes only through **`reset`** and **`step`**. **`state()`** is for insp
 
 ### Observability and urgency
 
-Only **pending** mail appears in **`inbox`**. Urgency blends **priority**, **customer tier**, and **remaining SLA**. The agent sees the **top `top_n`** by that score—not FIFO—so hidden mail can breach SLA if the policy ignores the global picture.
+Only **pending** mail appears in **`inbox`**. Urgency blends **priority** (**`low` … `critical`**), **customer tier**, **remaining SLA**, and any server-side **`urgency_adjustment`** from past thread replies. The agent sees the **top `top_n`** by that score—not FIFO—so hidden mail can breach SLA if the policy ignores the global picture. **`sla_limit`** on **`PublicEmail`** is the visible deadline width; escalations and bad-archive entanglement can **change** those limits on other pending rows so the queue **reshapes** without new messages.
 
 ### Per-step reward (summary)
 
-Multi-factor **deterministic** score: SLA, “did you pick the most urgent pending mail?”, **ground-truth action** match, **reply** keyword (or length) rubric, plus **action** and **idle** costs. Scalar **`reward`** is **normalized to [0, 1]**; **`metadata["grade"]`** keeps the breakdown for analysis and task graders.
+One formula: **SLA** (breach vs on-time), **prioritization** (picked most urgent visible pending row), **reply shape** (**length > 20** and punctuation among **`. , ! ?`**), **`consequence_signal`** (e.g. reply with hidden backlog, critical escalate with low SLA remaining, penalty for archiving **high/critical**), minus **action cost**. Mapped with **`(base + 0.6) / 1.2`** clipped to **[0, 1]**.
 
-| Component | Role |
-|-----------|------|
-| **SLA** | Breach vs on-time at step start |
-| **Prioritization** | Match to best pending by urgency |
-| **Action** | `reply` / `escalate` / `archive` vs label |
-| **Response** | Keywords in reply text (or length proxy) |
-| **Costs** | Discourage spam escalate and useless steps |
+**`metadata["grade"]`** includes **`consequence_signal`**. Valid steps omit per-step idle cost in the graded sum; invalid steps still apply **`per_step_idle_cost`** in the penalty path.
 
 ### Task score vs mean step reward
 
-**Per-step reward** shapes learning signal. **Task score** (in **`tasks.py`**) scores the **whole episode**—e.g. first-step urgency on easy, SLA + escalation discipline on medium, **responsiveness to new arrivals** on hard. They **need not** agree; a run can have high mean **`reward`** but modest **`task_score`**.
+**Training:** Step **`reward`** follows the single grader above. A **rubric** hook can still override **`observation.reward`**. **Task scores** in **`tasks.py`** use **observable** signals only (SLA flags, throughput, reply shape, arrivals, linear **`consequence_signal`** term on the hard task, etc.). Each **`TaskSpec.grader`** returns a **raw** score in **[0, 1]** (endpoints allowed on that sum). **`rollout_task`** and **`inference.py`** then call **`harness_task_score(raw)`** (exported from **`email_triage_env`**), which applies a **fixed affine** map with **`TASK_SCORE_HARNESS_MARGIN = 1e-3`**: `y = m + (1 − 2m) · clamp(raw, 0, 1)` with a final clamp to **`[m, 1 − m]`** for floating-point safety. That satisfies **0 < y < 1** without changing the rubric’s structure (same ordering and linear spacing in raw space). The **easy** task uses a **0.4 / 0.35 / 0.25** split so a wrong top pick can still earn partial credit from reply structure and archive hygiene. The **medium** grader uses **initial visible count** as the throughput denominator when **`arrivals_enabled`** is false (see **`reset_config`**). **`inference.py`** prints the harness task score with six decimals so it does not look like **0.00** / **1.00** from rounding. Alias **`_to_open_interval`** = **`harness_task_score`** for older imports.
 
 ---
 
 ## Benchmarks
 
-Three tasks; **harness** scores in the **open interval (0, 1)** (see **`harness_task_score`** in the env package), **deterministic** under fixed seeds:
+Three tasks; **harness** episode scores lie in the **open interval (0, 1)** (OpenEnv contract). **Deterministic** under fixed seeds.
 
 | Task ID | Difficulty | Max steps | What it tests |
 |---------|------------|-----------|----------------|
-| `easy_single_urgent_first` | Easy | 1 | Pick the **most urgent visible** mail and the **right** action first try. |
-| `medium_sla_safe_throughput` | Medium | 30 | Clear the queue with **few SLA breaches**, **correct actions**, **limited escalation**. |
-| `hard_dynamic_arrivals_backlog` | Hard | 30 | Same pressures **plus** **new mail**—latency to first handle of arrivals matters. |
+| `easy_single_urgent_first` | Easy | 1 | Weighted mix (0.4 / 0.35 / 0.25): **top-visible** pick; **reply** structure or non-reply credit; **no archive** on **high/critical** top row—so wrong picks can still earn partial score. |
+| `medium_sla_safe_throughput` | Medium | 30 | **SLA breach rate**, **throughput** vs **initial visible count** (**`arrivals_enabled: false`** keeps the denominator stable; grader ignores injected **`new_emails`** if arrivals were mis-enabled), **reply** structure. |
+| `hard_dynamic_arrivals_backlog` | Hard | 30 | **SLA breach rate**, **arrival responsiveness**, steps under **hidden backlog**, **`consequence_signal`** term **`0.2 * min(1, mean/0.1)`** (linear up to a cap, no cliff). |
 
+There is **no** dedicated task yet that requires explicitly **exploiting in-place entanglement** (thread de-escalation, sender SLA tightening, bad-archive hidden pressure); a fourth benchmark could target that.
 
-Repo-root **`inference.py`** drives an **LLM** against a live server and prints **`[START]` / `[STEP]` / `[END]`** lines. **`success=true`** only when the **task** grader returns a perfect **1.0**—strong step rewards alone are not enough.
+**`inference.py`** (this package) drives an **LLM** against a live server and prints **`[START]` / `[STEP]` / `[END]`** lines. **`success=true`** when the task score is **strictly between 0 and 1** (matches the open-interval task scores).
 
 ---
 
@@ -222,7 +218,7 @@ Requires HF auth. After deploy: Space URL, **`/web`**, **`/docs`**, **`/health`*
 |--------|------|--------|
 | `email_id` | `str` | Must be **pending**; invalid IDs waste time and hurt reward. |
 | `action_type` | `reply` \| `escalate` \| `archive` | |
-| `response` | `str` | Scored on **keywords** (server-side) when replying. |
+| `response` | `str` | Emergent step reward uses **length + punctuation** only (no keyword/oracle rubric). |
 
 ### `MyObservation`
 
@@ -233,14 +229,14 @@ Requires HF auth. After deploy: Space URL, **`/web`**, **`/docs`**, **`/health`*
 | `hidden_pending_count` | Pending mail not shown. |
 | `last_email_id`, `last_action_type`, `sla_breach`, `time_advance`, `action_cost` | Describe the **last** step. |
 | `done` | No pending mail left. |
-| `reward` | Normalized **[0, 1]**. |
-| `metadata` | **`grade`**, **`new_emails`**, or **`error`**. |
+| `reward` | **[0, 1]** from the grader’s clipped linear map (invalid steps use **`normalize_step_reward_to_unit`** on a penalty). |
+| `metadata` | **`grade`** (includes **`consequence_signal`**), **`new_emails`**, **`episode_stats`** (`sla_breach_count`, `sla_pressure_offset`), or **`error`**. |
 
-**`EnvConfig`** (at reset): `top_n`, `seed`, `arrivals_enabled`, `max_new_emails`, `action_costs`, `per_step_idle_cost`, `action_durations`, `expose_grader_labels_in_state`.
+**`EnvConfig`** (at reset): `top_n`, `seed`, `scenario_profile`, `arrivals_enabled`, `max_new_emails`, `thread_followups_enabled`, `escalation_echo_enabled`, `entanglement_enabled`, `bad_archive_pressure_delta`, `action_costs`, `per_step_idle_cost`, `action_durations`, `expose_grader_labels_in_state`. Unknown keys in the reset payload are ignored (e.g. deprecated **`reward_mode`** / **`oracle_weight`** from older clients).
 
-**`PublicEmail` vs `Email`:** Observations use **`PublicEmail`** (+ **`thread_id`** for grouping, not scored). **`Email`** adds **`ground_truth_action`** and **`required_response_keywords`**. **`GET /state`** strips labels unless **`expose_grader_labels_in_state: true`**.
+**`PublicEmail` vs `Email`:** Observations use **`PublicEmail`** (**`thread_id`**, **`thread_reply_excerpt`**, **`priority`** including **`critical`**). Server-only on **`Email`**: **`ground_truth_action`**, **`required_response_keywords`**, **`sender`** (for sender-based entanglement), **`thread_context_updated`**, **`urgency_adjustment`**—these never appear in observations or default **`state()`**. **`GET /state`** strips labels unless **`expose_grader_labels_in_state: true`**.
 
-**`MyState`:** Full clock, all emails, config, arrival counter.
+**`MyState`:** Full clock, all emails, config, arrival counter, **`thread_replies`**, **`sla_pressure_offset`**, **`episode_sla_breach_count`**.
 
 **`training_utils.py`:** **`slot_action_to_my_action`**, **`flat_index_to_slots`**, **`ACTION_KINDS`** for discrete RL spaces.
 
@@ -249,29 +245,32 @@ Requires HF auth. After deploy: Space URL, **`/web`**, **`/docs`**, **`/health`*
 | File | Role |
 |------|------|
 | `email_triage_environment.py` | Orchestrates reset / step / state. |
-| `scenarios.py` | Starter + arrival templates. |
+| `scenarios.py` | Fixed **`starter_inbox()`** + **parametric** **`generate_starter_inbox`** + arrival templates. |
+| `consequences.py` | In-place **entanglement** mutations + optional follow-ups and escalation echoes. |
 | `dynamics.py` | Urgency, top‑N, time, arrivals. |
 | `grader.py` | **`grade_step`** → **`GradeBreakdown`**. |
 
 ### Structured stdout (`inference.py`)
 
-Repo-root **`inference.py`** runs an **LLM policy** only: each step the model sees the visible inbox and must return parseable JSON for **`MyAction`**. Configure **`OPENAI_API_KEY`** or **`HF_TOKEN`**, **`MODEL_NAME`** / **`OPENAI_MODEL`**, **`OPENAI_BASE_URL`** / **`ENV_BASE_URL`** as needed.
+**`inference.py`** (this package) runs an **LLM policy**: each step the model sees **`body`**, **`thread_id`**, **`thread_reply_excerpt`**, **`hidden_pending_count`**, and visible fields; it must return parseable JSON for **`MyAction`**. Configure **`OPENAI_API_KEY`** or **`HF_TOKEN`**, **`MODEL_NAME`** / **`OPENAI_MODEL`**, **`OPENAI_BASE_URL`** / **`ENV_BASE_URL`** as needed. Optional: **`INFERENCE_VERBOSE_STEPS`**, **`INFERENCE_BODY_MAX_CHARS`**.
 
 1. **`[START]`** — `task`, `env`, `model`  
 2. **`[STEP]`** — `step`, `action`, `reward`, `done`, `error`  
-3. **`[END]`** — `success` (perfect task score only), `steps`, `score`, `rewards` CSV  
+3. **`[END]`** — `success` (**`0 < score < 1`** for the open-interval task score), `steps`, `score`, `rewards` CSV  
 
 Example:
 
 ```text
 [START] task=easy_single_urgent_first env=email_triage_env model=openai/gpt-oss-120b:groq
 [STEP]  step=1 action=reply('1','…') reward=0.61 done=false error=null
-[END]   success=false steps=1 score=0.50 rewards=0.61
+[END]   success=true steps=1 score=0.649700 rewards=0.61
 ```
+
+(`success` is **true** when **`0 < score < 1`**; **`score`** is **`harness_task_score(grader_raw)`**, strictly inside that range. **`[END]`** uses six decimal places for **`score`**.)
 
 ### Extending
 
-Ideas: thread **follow-ups** after reply; **open/read** actions; **assignee** on escalate; richer reply checklists.
+Ideas: **open/read** actions; **assignee** on escalate; richer reply checklists; learned rubrics; carrying **sender** (or a hashed id) into **`PublicEmail`** if policies should see it without labels.
 
 ### OpenEnv rubric hook
 
@@ -319,12 +318,15 @@ email_triage_env/
 ├── training_utils.py
 ├── client.py
 ├── models.py
+├── tasks.py
+├── inference.py
 ├── documentation.md      # stub → see README
 ├── explanation.md        # stub → see README
 └── server/
     ├── app.py
     ├── email_triage_environment.py
     ├── scenarios.py
+    ├── consequences.py
     ├── dynamics.py
     ├── grader.py
     └── Dockerfile

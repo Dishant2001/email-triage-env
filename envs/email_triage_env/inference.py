@@ -18,7 +18,6 @@ except ImportError:
     from models import MyAction, MyObservation
     from tasks import TaskSpec, all_tasks, harness_task_score
 
-# OpenAI-compatible chat completions (default: Hugging Face Inference / router).
 DEFAULT_LLM_BASE_URL = "https://router.huggingface.co/v1"
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
@@ -51,7 +50,6 @@ def _fmt_reward(x: float) -> str:
 
 
 def _fmt_task_score(x: float) -> str:
-    """Task scores are strictly inside (0, 1); avoid two-decimal rounding to 0.00 / 1.00."""
     return f"{float(x):.6f}"
 
 
@@ -95,12 +93,6 @@ def _env_bool(name: str) -> Optional[bool]:
 
 
 def _merge_reset_config(base: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Task reset_config first; optional env overrides for ad-hoc runs (training / ablations).
-
-    Supported env vars: SCENARIO_PROFILE, SEED, ENTANGLEMENT_ENABLED,
-    THREAD_FOLLOWUPS_ENABLED, ESCALATION_ECHO_ENABLED, ARRIVALS_ENABLED, MAX_NEW_EMAILS, TOP_N.
-    """
     out: Dict[str, Any] = dict(base)
     sp = os.getenv("SCENARIO_PROFILE")
     if sp is not None and str(sp).strip() != "":
@@ -146,7 +138,6 @@ def _truncate_body(text: str, max_chars: int) -> str:
 
 
 def _llm_system_prompt() -> str:
-    """System prompt aligned with emergent step rewards (no oracle / keyword gaming)."""
     return (
         "You are an inbox triage agent. Output exactly one compact JSON object with keys "
         '{"email_id": string, "action_type": "reply"|"escalate"|"archive", "response": string}. '
@@ -155,8 +146,7 @@ def _llm_system_prompt() -> str:
         "Priority urgency order is: critical > high > medium > low. "
         "thread_reply_excerpt (when non-empty) is your prior reply in that thread—stay consistent. "
         "For reply, write at least one clear sentence (>20 characters) and include "
-        "punctuation such as . , ! or ? (plain professional tone; do not try to guess hidden rubric keywords). "
-        "Keep the response field short enough that the JSON stays complete."
+        "punctuation such as . , ! or ?. Keep the response field short enough that the JSON stays complete."
     )
 
 
@@ -234,7 +224,7 @@ async def _llm_action(client: OpenAI, obs: MyObservation) -> Optional[MyAction]:
     if not match:
         hint = ""
         if text.lstrip().startswith("{") and text.rstrip().endswith("}") is False:
-            hint = " (output looks truncated — raise MAX_TOKENS or shorten the model's response field)"
+            hint = " (truncated JSON? try higher MAX_TOKENS)"
         print(
             f"inference: model returned no parseable JSON object{hint} (first 500 chars): {text[:500]!r}",
             file=sys.stderr,
@@ -265,7 +255,6 @@ async def _run_one_task(
     task: TaskSpec,
     llm_client: OpenAI,
 ) -> tuple[List[float], int, float, bool]:
-    """Run one episode; caller prints [END] after env.close() (context exit)."""
     rewards: List[float] = []
     step_num = 0
     score = 0.0

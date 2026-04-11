@@ -7,8 +7,6 @@ from typing import Iterable, List, Optional
 try:
     from ..models import CustomerTier, Email, EmailPriority, EmailStatus, EnvConfig
 except ImportError:  # pragma: no cover
-    # When uvicorn imports this package as top-level `server.*`,
-    # relative import one level up may fail.
     from models import CustomerTier, Email, EmailPriority, EmailStatus, EnvConfig
 from .inbox_types import ArrivalTemplate, make_email
 
@@ -59,10 +57,6 @@ def maybe_generate_arrivals(
     if not config.arrivals_enabled or remaining_budget <= 0 or not templates:
         return []
 
-    # Simple deterministic-ish stochastic process:
-    # - At most 1 new email per step
-    # - Higher chance earlier in the episode
-    # - Slightly higher after agent activity in a thread (entanglement)
     p = 0.25 if current_time < 5 else 0.15
     if last_reply_thread_id:
         p = min(0.82, p + 0.12)

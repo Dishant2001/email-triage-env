@@ -15,49 +15,15 @@ from openenv.core.env_server.types import State
 try:
     from .models import Email, MyAction, MyObservation, MyState, PublicEmail
 except ImportError:
-    # Running as a loose script (e.g. ``from client import …`` with cwd = package root).
     from models import Email, MyAction, MyObservation, MyState, PublicEmail
 
 
 class EmailTriageEnv(
     EnvClient[MyAction, MyObservation, State]
 ):
-    """
-    Client for EmailTriageEnv (connects to a server running :class:`EmailTriageEnvironment`).
-
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated environment session on the server.
-
-    Example:
-        >>> # Connect to a running server
-        >>> with EmailTriageEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.current_time)
-        ...
-        ...     result = client.step(MyAction(email_id="1", action_type="escalate"))
-        ...     print(result.observation.inbox)
-
-    Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = EmailTriageEnv.from_docker_image("email-triage-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(MyAction(email_id="1", action_type="reply", response="Test"))
-        ... finally:
-        ...     client.close()
-    """
+    """WebSocket client to ``EmailTriageEnvironment`` (one server session per instance)."""
 
     def _step_payload(self, action: MyAction) -> Dict:
-        """
-        Convert MyAction to JSON payload for step message.
-
-        Args:
-            action: MyAction instance
-
-        Returns:
-            Dictionary representation suitable for JSON encoding
-        """
         return {
             "email_id": action.email_id,
             "action_type": action.action_type,
@@ -65,15 +31,6 @@ class EmailTriageEnv(
         }
 
     def _parse_result(self, payload: Dict) -> StepResult[MyObservation]:
-        """
-        Parse server response into StepResult[MyObservation].
-
-        Args:
-            payload: JSON response data from server
-
-        Returns:
-            StepResult with MyObservation
-        """
         obs_data = payload.get("observation", {})
         inbox_data = cast(List[Dict], obs_data.get("inbox", []))
         inbox = [PublicEmail.model_validate(e) for e in inbox_data]
@@ -98,15 +55,6 @@ class EmailTriageEnv(
         )
 
     def _parse_state(self, payload: Dict) -> State:
-        """
-        Parse server response into State object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            State object with episode_id and step_count
-        """
         data = dict(payload)
         raw_emails = cast(List[Dict], data.pop("emails", []))
         emails: List[PublicEmail] = []

@@ -1,4 +1,4 @@
-"""Causal follow-ups and entanglement: replies/escalations shape future inbox (not isolated items)."""
+"""Follow-up mail, echoes, and in-place entanglement mutations on pending rows."""
 
 from __future__ import annotations
 
@@ -28,12 +28,6 @@ def apply_entanglement_state_mutations(
     top_n: int,
     config: EnvConfig,
 ) -> None:
-    """
-    Mutate existing pending :class:`Email` rows in place (no new email objects).
-
-    Gated by ``config.entanglement_enabled``. Run after grading, before marking
-    the chosen email processed, so sibling pending mail reflects consequences.
-    """
     if not config.entanglement_enabled:
         return
 

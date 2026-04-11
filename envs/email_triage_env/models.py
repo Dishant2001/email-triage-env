@@ -4,15 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""
-Data models for EmailTriageEnv / EmailTriageEnvironment.
-
-The inbox triage environment where an agent triages
-multiple emails under SLA deadlines.
-
-Agent-facing observations use :class:`PublicEmail` only (no grader labels).
-Full :class:`Email` records (including ground truth) live on the server for scoring.
-"""
+"""Pydantic models for EmailTriageEnv: ``PublicEmail`` in observations; full ``Email`` on server for grading."""
 
 from enum import Enum
 from typing import Dict, List, Literal, Optional
@@ -218,18 +210,11 @@ class MyObservation(Observation):
 
 
 class MyReward(BaseModel):
-    """
-    Typed reward payload for OpenEnv spec compliance.
-
-    Note: the OpenEnv runtime transports reward as a float, but environments can
-    also expose a typed breakdown via metadata and evaluation harnesses.
-    """
-
     total: float = Field(..., description="Total scalar reward for the step")
     sla_breach: bool = Field(..., description="Whether SLA was breached for chosen email")
     sla_score: float = Field(..., description="SLA component")
     prioritization_score: float = Field(..., description="Urgency selection component")
-    action_score: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
+    action_score: float = Field(default=0.0, description="Unused (0)")
     response_score: float = Field(..., description="Deterministic response rubric component")
     throughput_score: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
     breach_load_penalty: float = Field(default=0.0, description="Reserved; step grader leaves at 0")
@@ -238,4 +223,4 @@ class MyReward(BaseModel):
         description="Consequence term from thread/hidden-queue heuristics in step grading.",
     )
     cost_penalty: float = Field(..., description="Action cost penalty (negative)")
-    idle_penalty: float = Field(default=0.0, description="Reserved; valid steps omit idle in graded sum")
+    idle_penalty: float = Field(default=0.0, description="Unused (0) in current step grader")

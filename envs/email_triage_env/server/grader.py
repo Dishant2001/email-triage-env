@@ -26,7 +26,6 @@ class GradeBreakdown:
 
 
 def effective_sla_limit(email: Email, sla_pressure_offset: int) -> int:
-    """Tighter effective window when entanglement increased pressure (bad prior decisions)."""
     return max(1, int(email.sla_limit) - int(sla_pressure_offset))
 
 
@@ -37,7 +36,6 @@ def _best_email(pending: List[Email], current_time: int) -> Email | None:
 
 
 def step_reward_bounds(config: EnvConfig) -> tuple[float, float]:
-    """Bounds for mapping invalid-step penalties to [0, 1] (fixed penalty envelope)."""
     costs = list(config.action_costs.values()) if config.action_costs else [0.0]
     max_c = max(costs)
     min_c = min(costs)

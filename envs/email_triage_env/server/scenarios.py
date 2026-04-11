@@ -214,15 +214,7 @@ def _enforce_high_sender_repeat(senders: List[str], profile: int, rng: random.Ra
 
 
 def generate_starter_inbox(*, seed: int, profile: int) -> List[Email]:
-    """
-    Parametric starter inbox. ``profile == 0`` returns the fixed legacy fixture.
-
-    Profiles 1–5: low complexity; 6–10: medium (clusters, mixed SLAs);
-    11–15: high (critical-heavy, tight SLAs, sender repetition for entanglement).
-
-    Randomness uses ``random.Random(seed)`` only so the result is independent of
-    any other RNG in the process.
-    """
+    """Parametric inbox by ``profile`` (0 = fixed fixture). Sampling uses ``random.Random(seed)`` only."""
     if profile == 0:
         return starter_inbox()
 

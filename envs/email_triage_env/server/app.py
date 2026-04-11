@@ -4,29 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""
-FastAPI application for EmailTriageEnv.
-
-This module creates an HTTP server that exposes :class:`EmailTriageEnvironment`
-over HTTP and WebSocket endpoints, compatible with EnvClient.
-
-Endpoints:
-    - POST /reset: Reset the environment
-    - POST /step: Execute an action
-    - GET /state: Get current environment state
-    - GET /schema: Get action/observation schemas
-    - WS /ws: WebSocket endpoint for persistent sessions
-
-Usage:
-    # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
-
-    # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
-
-    # Or run directly:
-    python -m server.app
-"""
+"""FastAPI app for EmailTriageEnvironment (HTTP + WebSocket via openenv)."""
 
 try:
     from openenv.core.env_server.http_server import create_app
@@ -43,46 +21,25 @@ except ImportError:  # pragma: no cover
     from server.email_triage_environment import EmailTriageEnvironment
 
 
-# Create the app with web interface and README integration
 app = create_app(
     EmailTriageEnvironment,
     MyAction,
     MyObservation,
     env_name="email_triage_env",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=1,
 )
 
 
-def main(host: str = "0.0.0.0", port: int = 8000):
-    """
-    Entry point for direct execution via uv run or python -m.
-
-    This function enables running the server without Docker:
-        uv run --project . server
-        uv run --project . server --port 8001
-        python -m email_triage_env.server.app
-
-    Args:
-        host: Host address to bind to (default: "0.0.0.0")
-        port: Port number to listen on (default: 8000)
-
-    For production deployments, consider using uvicorn directly with
-    multiple workers:
-        uvicorn email_triage_env.server.app:app --workers 4
-    """
+def main() -> None:
+    import argparse
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port)
+    p = argparse.ArgumentParser()
+    p.add_argument("--host", type=str, default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8000)
+    a = p.parse_args()
+    uvicorn.run(app, host=a.host, port=a.port)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-
-    # Keep a plain `main()` entrypoint for deployment validators that
-    # statically check for it, while still allowing CLI overrides.
-    main(host=args.host, port=args.port)
+    main()
