@@ -28,6 +28,7 @@ except ImportError:
     from models import EmailStatus, EnvConfig, MyAction, MyObservation, MyState, to_public_email
 
 try:
+    from .consequences import maybe_escalation_echo, maybe_reply_followup, thread_key
     from .dynamics import (
         apply_action_dynamics,
         maybe_generate_arrivals,
@@ -35,8 +36,9 @@ try:
         select_top_n_pending,
     )
     from .grader import clip01, grade_step, normalize_step_reward_to_unit
-    from .scenarios import arrival_templates, starter_inbox
+    from .scenarios import arrival_templates, generate_starter_inbox, starter_inbox
 except ImportError:  # pragma: no cover
+    from server.consequences import maybe_escalation_echo, maybe_reply_followup, thread_key
     from server.dynamics import (
         apply_action_dynamics,
         maybe_generate_arrivals,
@@ -44,7 +46,7 @@ except ImportError:  # pragma: no cover
         select_top_n_pending,
     )
     from server.grader import clip01, grade_step, normalize_step_reward_to_unit
-    from server.scenarios import arrival_templates, starter_inbox
+    from server.scenarios import arrival_templates, generate_starter_inbox, starter_inbox
 
 
 class EmailTriageEnvironment(Environment):
@@ -67,7 +69,6 @@ class EmailTriageEnvironment(Environment):
         super().__init__()
         self._rng = random.Random()
         self._arrival_templates = arrival_templates()
-        self._starter_emails = starter_inbox()
         self._state = MyState(
             episode_id=str(uuid4()),
             step_count=0,
@@ -80,9 +81,16 @@ class EmailTriageEnvironment(Environment):
     def _pending(self):
         return [e for e in self._state.emails if e.status == EmailStatus.pending]
 
-    def _public_inbox(self, visible_emails):
-        """Map internal Email rows to agent-visible PublicEmail (no grader labels)."""
-        return [to_public_email(e) for e in visible_emails]
+    def _visible_public_rows(self, visible_emails):
+        """Map pending rows to PublicEmail with thread reply excerpts (no grader labels)."""
+        replies = self._state.thread_replies
+        out: list = []
+        for e in visible_emails:
+            pub = to_public_email(e)
+            key = thread_key(e)
+            excerpt = replies.get(key, "")
+            out.append(pub.model_copy(update={"thread_reply_excerpt": excerpt}))
+        return out
 
     def _observe(self) -> MyObservation:
         pending = self._pending()
@@ -93,7 +101,7 @@ class EmailTriageEnvironment(Environment):
             done=len(pending) == 0,
             reward=None,
             current_time=self._state.current_time,
-            inbox=self._public_inbox(visible),
+            inbox=self._visible_public_rows(visible),
             hidden_pending_count=hidden,
             last_email_id=None,
             last_action_type=None,
@@ -116,13 +124,22 @@ class EmailTriageEnvironment(Environment):
         if effective_seed is not None:
             self._rng.seed(int(effective_seed))
 
+        if config.scenario_profile == 0:
+            starter = [e.model_copy(deep=True) for e in starter_inbox()]
+        else:
+            seed_for_scenario = int(effective_seed) if effective_seed is not None else 0
+            starter = [e.model_copy(deep=True) for e in generate_starter_inbox(seed=seed_for_scenario, profile=config.scenario_profile)]
+
         self._state = MyState(
             episode_id=episode_id or str(uuid4()),
             step_count=0,
             current_time=0,
-            emails=[e.model_copy(deep=True) for e in self._starter_emails],
+            emails=starter,
             config=config,
             new_emails_added=0,
+            thread_replies={},
+            sla_pressure_offset=0,
+            episode_sla_breach_count=0,
         )
 
         observation = self._observe()
@@ -146,7 +163,7 @@ class EmailTriageEnvironment(Environment):
             action_cost = float(self._state.config.action_costs.get(action.action_type, 0.0))
             observation = MyObservation(
                 current_time=self._state.current_time,
-                inbox=self._public_inbox(
+                inbox=self._visible_public_rows(
                     select_top_n_pending(
                         self._state.emails, self._state.current_time, top_n=int(self._state.config.top_n)
                     )
@@ -173,9 +190,28 @@ class EmailTriageEnvironment(Environment):
             pending_before=pending_before,
             current_time=self._state.current_time,
             config=self._state.config,
+            sla_pressure_offset=self._state.sla_pressure_offset,
+            episode_sla_breach_count=self._state.episode_sla_breach_count,
+            reward_mode=self._state.config.reward_mode,
+            oracle_weight=self._state.config.oracle_weight,
         )
         reward = normalize_step_reward_to_unit(breakdown.total, self._state.config)
         sla_breach = breakdown.sla_breach
+
+        if breakdown.sla_breach:
+            self._state.episode_sla_breach_count += 1
+
+        if action.action_type == "reply" and action.response.strip():
+            tid = thread_key(chosen)
+            text = action.response.strip()
+            self._state.thread_replies[tid] = text[:480]
+
+        if (
+            self._state.config.entanglement_enabled
+            and action.action_type == "archive"
+            and chosen.ground_truth_action != "archive"
+        ):
+            self._state.sla_pressure_offset += int(self._state.config.bad_archive_pressure_delta)
 
         # Apply action: mark email processed
         for e in self._state.emails:
@@ -187,15 +223,47 @@ class EmailTriageEnvironment(Environment):
         self._state.step_count += 1
         self._state.current_time += dyn.time_advance
 
-        # Stochastic arrivals (deterministic via seed)
+        last_thread: str | None = None
+        if action.action_type in ("reply", "escalate"):
+            last_thread = thread_key(chosen) or None
+
+        start_c = next_email_id(self._state.emails, fallback=1)
+        consequence_batch: list = []
+        consequence_batch.extend(
+            maybe_reply_followup(
+                rng=self._rng,
+                config=self._state.config,
+                chosen=chosen,
+                action=action,
+                next_email_id=start_c,
+                current_time=self._state.current_time,
+            )
+        )
+        nxt = start_c + len(consequence_batch)
+        consequence_batch.extend(
+            maybe_escalation_echo(
+                rng=self._rng,
+                config=self._state.config,
+                chosen=chosen,
+                action=action,
+                next_email_id=nxt,
+                current_time=self._state.current_time,
+            )
+        )
+        if consequence_batch:
+            self._state.emails.extend(consequence_batch)
+            self._state.new_emails_added += len(consequence_batch)
+
+        arrival_next_id = next_email_id(self._state.emails, fallback=1)
         remaining_budget = max(0, int(self._state.config.max_new_emails) - int(self._state.new_emails_added))
         new_emails = maybe_generate_arrivals(
             rng=self._rng,
             current_time=self._state.current_time,
             config=self._state.config,
-            next_email_id=next_email_id(self._state.emails, fallback=1),
+            next_email_id=arrival_next_id,
             templates=self._arrival_templates,
             remaining_budget=remaining_budget,
+            last_reply_thread_id=last_thread,
         )
         if new_emails:
             self._state.emails.extend(new_emails)
@@ -206,9 +274,10 @@ class EmailTriageEnvironment(Environment):
             self._state.emails, self._state.current_time, top_n=int(self._state.config.top_n)
         )
         hidden = max(0, len(pending_after) - len(visible))
+        injected_ids = [e.email_id for e in consequence_batch] + [e.email_id for e in new_emails]
         observation = MyObservation(
             current_time=self._state.current_time,
-            inbox=self._public_inbox(visible),
+            inbox=self._visible_public_rows(visible),
             hidden_pending_count=hidden,
             last_email_id=chosen.email_id,
             last_action_type=action.action_type,
@@ -219,7 +288,11 @@ class EmailTriageEnvironment(Environment):
             action_cost=float(self._state.config.action_costs.get(action.action_type, 0.0)),
             metadata={
                 "grade": breakdown.__dict__,
-                "new_emails": [e.email_id for e in new_emails],
+                "new_emails": injected_ids,
+                "episode_stats": {
+                    "sla_breach_count": self._state.episode_sla_breach_count,
+                    "sla_pressure_offset": self._state.sla_pressure_offset,
+                },
             },
         )
 
@@ -247,4 +320,7 @@ class EmailTriageEnvironment(Environment):
             emails=[to_public_email(e) for e in s.emails],
             config=s.config,
             new_emails_added=s.new_emails_added,
+            thread_replies=dict(s.thread_replies),
+            sla_pressure_offset=s.sla_pressure_offset,
+            episode_sla_breach_count=s.episode_sla_breach_count,
         )

@@ -66,6 +66,10 @@ class PublicEmail(BaseModel):
     created_time: int
     sla_limit: int
     status: EmailStatus = EmailStatus.pending
+    thread_reply_excerpt: str = Field(
+        default="",
+        description="Prior agent reply in this thread (if any); populated server-side for observations.",
+    )
 
 
 class Email(PublicEmail):
@@ -83,9 +87,9 @@ class Email(PublicEmail):
 
 def to_public_email(email: PublicEmail) -> PublicEmail:
     """Strip grader-only fields for observations and optional state export."""
-    return PublicEmail.model_validate(
-        email.model_dump(include=set(PublicEmail.model_fields.keys()))
-    )
+    keys = set(PublicEmail.model_fields.keys())
+    # thread_reply_excerpt is agent-facing; keep if present on Email dump
+    return PublicEmail.model_validate(email.model_dump(include=keys))
 
 
 class EnvConfig(BaseModel):
@@ -114,6 +118,46 @@ class EnvConfig(BaseModel):
             "(recommended for RL training clients that call state())."
         ),
     )
+    scenario_profile: int = Field(
+        default=0,
+        ge=0,
+        le=15,
+        description=(
+            "0 = fixed legacy starter inbox (reproducible benchmarks). "
+            "1–15 = procedural inbox variants (composition / SLA mix) from the same seed."
+        ),
+    )
+    reward_mode: Literal["legacy", "emergent", "hybrid"] = Field(
+        default="hybrid",
+        description=(
+            "legacy: step reward weights oracle labels heavily. "
+            "emergent: SLA, prioritization, throughput, breach load—minimal oracle. "
+            "hybrid: blend (see oracle_weight)."
+        ),
+    )
+    oracle_weight: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="In hybrid mode, weight on ground-truth action match; remainder is emergent-only for that component.",
+    )
+    thread_followups_enabled: bool = Field(
+        default=True,
+        description="After a reply, may inject a follow-up email in the same thread.",
+    )
+    escalation_echo_enabled: bool = Field(
+        default=True,
+        description="After escalate, may inject a low-urgency internal ticket tied to the thread.",
+    )
+    entanglement_enabled: bool = Field(
+        default=True,
+        description="Bad archive (vs hidden label) increases SLA pressure on remaining pending mail.",
+    )
+    bad_archive_pressure_delta: int = Field(
+        default=1,
+        ge=0,
+        description="How much effective SLA window tightens per mistaken archive (when entanglement_enabled).",
+    )
 
 
 class MyState(State):
@@ -126,6 +170,20 @@ class MyState(State):
     )
     config: EnvConfig = Field(default_factory=EnvConfig, description="Episode configuration")
     new_emails_added: int = Field(default=0, ge=0, description="How many new emails have been injected so far")
+    thread_replies: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Latest agent reply text per thread_id (or email_id if thread empty).",
+    )
+    sla_pressure_offset: int = Field(
+        default=0,
+        ge=0,
+        description="Tightens effective SLA limits for pending mail after bad decisions.",
+    )
+    episode_sla_breach_count: int = Field(
+        default=0,
+        ge=0,
+        description="Running count of SLA breaches this episode (consequence signal).",
+    )
 
 
 class MyObservation(Observation):
@@ -168,5 +226,7 @@ class MyReward(BaseModel):
     prioritization_score: float = Field(..., description="Urgency selection component")
     action_score: float = Field(..., description="Ground-truth action match component")
     response_score: float = Field(..., description="Deterministic response rubric component")
+    throughput_score: float = Field(default=0.0, description="Small bonus when SLA not breached this step")
+    breach_load_penalty: float = Field(default=0.0, description="Penalty scaling with prior breaches this episode")
     cost_penalty: float = Field(..., description="Action cost penalty (negative)")
     idle_penalty: float = Field(..., description="Per-step idle penalty (negative)")

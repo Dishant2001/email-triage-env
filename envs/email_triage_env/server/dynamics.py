@@ -50,6 +50,7 @@ def maybe_generate_arrivals(
     next_email_id: int,
     templates: List[ArrivalTemplate],
     remaining_budget: int,
+    last_reply_thread_id: Optional[str] = None,
 ) -> List[Email]:
     if not config.arrivals_enabled or remaining_budget <= 0 or not templates:
         return []
@@ -57,12 +58,15 @@ def maybe_generate_arrivals(
     # Simple deterministic-ish stochastic process:
     # - At most 1 new email per step
     # - Higher chance earlier in the episode
+    # - Slightly higher after agent activity in a thread (entanglement)
     p = 0.25 if current_time < 5 else 0.15
+    if last_reply_thread_id:
+        p = min(0.82, p + 0.12)
     if rng.random() > p:
         return []
 
     t = rng.choice(templates)
-    thread_id = t.thread_id or f"t{rng.randint(1, 3)}"
+    thread_id = t.thread_id or last_reply_thread_id or f"t{rng.randint(1, 3)}"
     return [
         make_email(
             email_id=str(next_email_id),
